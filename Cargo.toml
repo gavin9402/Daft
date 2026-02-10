@@ -140,8 +140,11 @@ parquet2 = {path = "src/parquet2"}
 debug = true
 
 [profile.dev]
-debug = "line-tables-only"
-overflow-checks = false
+opt-level = 0
+debug = 2
+split-debuginfo = "unpacked"  # macOS 可用，Linux 可不写
+debug-assertions = true
+overflow-checks = true
 
 [profile.dev.build-override]
 opt-level = 3
