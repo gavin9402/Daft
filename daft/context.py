@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from daft.daft import IOConfig, PyDaftContext, PyDaftExecutionConfig, PyDaftPlanningConfig, PyQueryResult
@@ -27,6 +27,8 @@ class DaftContext:
 
     _lock: ClassVar[threading.Lock] = threading.Lock()
 
+    _extra_options: dict[str, str] = field(default_factory=dict[str, str])
+
     @staticmethod
     def _from_native(ctx: PyDaftContext) -> DaftContext:
         return DaftContext(ctx=ctx)
@@ -36,6 +38,7 @@ class DaftContext:
             self._ctx = ctx
         else:
             self._ctx = PyDaftContext()
+        self._extra_options: dict[str, str] = {}
 
     @property
     def daft_execution_config(self) -> PyDaftExecutionConfig:
@@ -100,6 +103,10 @@ class DaftContext:
             raise ValueError("Query Managers only support the Native Runner for now")
         self._ctx.notify_result_out(query_id, result._micropartition)
 
+    @property
+    def extra_options(self) -> dict[str, str]:
+        return self._extra_options
+
 
 def get_context() -> DaftContext:
     """Returns the global singleton daft context."""
@@ -142,6 +149,13 @@ def set_planning_config(
 
         ctx._ctx._daft_planning_config = new_daft_planning_config
         return ctx
+
+
+def with_extra_options(options: dict[str, str]) -> None:
+    ctx = get_context()
+    with ctx._lock:
+        for k, v in options.items():
+            ctx._extra_options[k] = v
 
 
 @contextlib.contextmanager

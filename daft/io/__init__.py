@@ -30,6 +30,7 @@ from daft.io.huggingface import read_huggingface
 from daft.io.mcap._mcap import read_mcap
 from daft.io._range import _range
 from daft.io.file_path import from_glob_path
+from daft.io.paimon import read_paimon
 from daft.io.sink import DataSink
 from daft.io.source import DataSource, DataSourceTask
 from daft.io.av import read_video_frames
@@ -73,6 +74,7 @@ __all__ = [
     "read_kafka",
     "read_lance",
     "read_mcap",
+    "read_paimon",
     "read_parquet",
     "read_sql",
     "read_text",

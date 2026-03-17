@@ -219,6 +219,15 @@ class Catalog(ABC):
             raise ImportError("Iceberg support not installed: pip install -U 'daft[iceberg]'")
 
     @staticmethod
+    def from_paimon(catalog: object) -> Catalog:
+        try:
+            from daft.catalog.__paimon import PaimonCatalog
+
+            return PaimonCatalog._from_obj(catalog)
+        except ImportError:
+            raise ImportError("Paimon support not installed: pip install -U 'daft[paimon]'")
+
+    @staticmethod
     def from_unity(catalog: object) -> Catalog:
         """Create a Daft Catalog from a Unity Catalog client.
 
@@ -369,7 +378,7 @@ class Catalog(ABC):
     @staticmethod
     def _from_obj(obj: object) -> Catalog:
         """Returns a Daft Catalog from a supported object type or raises a ValueError."""
-        for factory in (Catalog.from_iceberg, Catalog.from_unity, Catalog.from_gravitino):
+        for factory in (Catalog.from_iceberg, Catalog.from_unity, Catalog.from_gravitino, Catalog.from_paimon):
             try:
                 return factory(obj)
             except ValueError:

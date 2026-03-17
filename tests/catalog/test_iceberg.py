@@ -40,6 +40,7 @@ def iceberg_catalog(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def global_sess(iceberg_catalog):
+    daft.context.set_execution_config(enable_scan_task_split_and_merge=True)
     daft.attach_catalog(iceberg_catalog, alias=CATALOG_ALIAS)
     yield daft.current_session()
     try:
@@ -163,18 +164,25 @@ def test_create_table(catalog: Catalog):
     c.drop_namespace(n)
 
 
-def test_create_partitioned_table_identity(catalog):
+def test_create_partitioned_table_identity(catalog, global_sess):
     c = catalog
     n = "test_partitioned_identity"
     c.create_namespace(n)
     sch = schema({"a": dt.int64(), "b": dt.string()})
     pf = PartitionField.create(
-        field=Field.create("a", dt.int64()),
-        source_field=Field.create("a", dt.int64()),
+        field=Field.create("b", dt.string()),
+        source_field=Field.create("b", dt.string()),
         transform=PartitionTransform.identity(),
     )
+    df = daft.from_pydict({"a": [1, 2, 3], "b": ["x", "y", "z"]})
     c.create_table(f"{n}.tbl", sch, partition_fields=[pf])
     tbl = c.get_table(f"{n}.tbl")
+    tbl.write(df)
+
+    df = global_sess.sql(f"select * from {n}.tbl where b < 'x' and a > abs(1) and b > cast(abs(1) as string)")
+    result = df.collect()
+    print(result)
+
     partition_spec = tbl._inner.spec()
     field = partition_spec.fields[0]
     assert field.name == "a"
@@ -438,8 +446,19 @@ def test_list_tables(catalog: Catalog, sess: Session):
 
 
 def test_daft_read_table(global_sess: Session):
-    assert global_sess.read_table(f"{CATALOG_ALIAS}.default.tbl") is not None
+    df = daft.from_pydict({"x": [1, 2, 3, 4, 5], "y": [5, 4, 3, 2, 1], "z": [6, 6, 6, 6, 6]})
+    tbl = global_sess.get_table(f"{CATALOG_ALIAS}.default.tbl")
+    tbl.write(df)
+    result = global_sess.read_table(f"{CATALOG_ALIAS}.default.tbl")
+    result.collect()
+    assert result is not None
     assert daft.read_table(f"{CATALOG_ALIAS}.default.tbl") is not None
+
+
+def test_sql_read_table(global_sess: Session):
+    df = global_sess.sql("select * from _test_catalog_iceberg.default.tbl")
+    result = df.collect()
+    print(result)
 
 
 def test_sess_read_table(sess: Session):
