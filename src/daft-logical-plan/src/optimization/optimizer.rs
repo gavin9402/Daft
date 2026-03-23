@@ -384,7 +384,17 @@ impl Optimizer {
     ) -> DaftResult<Transformed<Arc<LogicalPlan>>> {
         // Fold over the rules, applying each rule to this plan node sequentially.
         rules.iter().try_fold(Transformed::no(plan), |plan, rule| {
-            plan.transform_data(|data| rule.try_optimize(data))
+            let before = plan.data.clone();
+            let result = plan.transform_data(|data| rule.try_optimize(data))?;
+            if result.transformed {
+                log::debug!(
+                    "[Optimizer] Rule: {} | Before: {} | After: {}",
+                    rule.name(),
+                    before,
+                    result.data
+                );
+            }
+            Ok(result)
         })
     }
 }

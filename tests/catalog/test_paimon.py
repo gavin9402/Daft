@@ -2,6 +2,7 @@
 # @File    : test_paimon.py
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 
@@ -14,6 +15,25 @@ import daft
 from daft import Catalog, Session, col
 from daft.daft import PyPushdowns
 from daft.io.paimon.paimon_predicate_visitor import PaimonPredicateVisitor
+
+# 1. 创建 FileHandler
+file_handler = logging.FileHandler("daft.log", mode="w", encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
+
+# 2. 设置格式（可选，但推荐加上时间和模块名）
+formatter = logging.Formatter(
+    fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+file_handler.setFormatter(formatter)
+
+# 3. 配置 root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)
+root_logger.addHandler(file_handler)
+
+# 4. 关键：同步到 Rust 侧
+daft.refresh_logger()
 
 CATALOG_ALIAS = "_test_catalog_paimon"
 DEFAULT_DB = "default"
@@ -70,12 +90,14 @@ def test_read_ao(sess: Session):
     table = _catalog.get_table(f"{DEFAULT_DB}.{DEFAULT_TBL}")
     _write_test_table(table)
 
-    table = sess.get_table(f"{DEFAULT_DB}.{DEFAULT_TBL}")
-    print(table.schema())
+    # table = sess.get_table(f"{DEFAULT_DB}.{DEFAULT_TBL}")
+    # print(table.schema())
 
-    # df = sess.sql(f"select * from {DEFAULT_DB}.{DEFAULT_TBL} "
-    #               f"where dt < 'p1' and dt > cast((abs(1) + 2) as string) and user_id > abs(1)")
-    df = sess.read_table(ident).select("user_id", "item_id", "dt").filter("dt > 'p1'").filter("user_id > 1")
+    df = sess.sql(
+        f"select * from {DEFAULT_DB}.{DEFAULT_TBL} "
+        f"where dt < 'p1' and dt > cast((abs(1) + 2) as string) and user_id > abs(1)"
+    )
+    # df = sess.read_table(ident).select("user_id", "item_id", "dt").filter("dt > 'p1'").filter("user_id > 1")
     print(df.collect())
 
 
