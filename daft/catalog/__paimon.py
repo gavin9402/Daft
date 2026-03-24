@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from daft.io.paimon._paimon import PaimonDataSource
+
 if TYPE_CHECKING:
     import pyarrow as pa
 
@@ -15,7 +17,6 @@ from pypaimon.schema.data_types import DataField, PyarrowFieldParser
 from pypaimon.table.file_store_table import FileStoreTable as InnerTable
 
 import daft
-from daft import read_paimon
 from daft.catalog import Catalog, Identifier, NotFoundError, Properties, Schema, Table
 
 if TYPE_CHECKING:
@@ -175,7 +176,7 @@ class PaimonTable(Table):
         Table._validate_options("paimon read", options, PaimonTable._read_options)
         if len(core_options) > 0:
             self._inner = self._inner.copy(core_options)
-        return read_paimon(self._inner)
+        return PaimonDataSource(self._inner).read()
 
     def append(self, df: DataFrame, **options: Any) -> None:
         pass
