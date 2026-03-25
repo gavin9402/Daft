@@ -7,7 +7,7 @@ from pypaimon.schema.data_types import PyarrowFieldParser
 from daft import Schema
 from daft.io import DataSource, DataSourceTask
 from daft.io.paimon.paimon_predicate_visitor import PaimonPredicateVisitor
-from daft.io.partitioning import PartitionField, PartitionTransform
+from daft.io.partitioning import PartitionField
 from daft.recordbatch import MicroPartition
 
 if TYPE_CHECKING:
@@ -85,8 +85,8 @@ class PaimonDataSource(DataSource):
             partition_fields.append(
                 PartitionField.create(
                     field=daft_field,
-                    source_field=daft_field,
-                    transform=PartitionTransform.identity(),
+                    source_field=None,
+                    transform=None,
                 )
             )
         return partition_fields

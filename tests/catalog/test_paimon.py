@@ -98,14 +98,14 @@ def test_read_ao(sess: Session):
     # table = sess.get_table(f"{DEFAULT_DB}.{DEFAULT_TBL}")
     # print(table.schema())
 
-    # df = sess.sql(
-    #     f"select * from {DEFAULT_DB}.{DEFAULT_TBL} "
-    #     f"where dt < 'p1' and dt > cast((abs(1) + 2) as string) and user_id > abs(1)"
-    # )
     df = sess.sql(
         f"select * from {DEFAULT_DB}.{DEFAULT_TBL} "
         f"where dt < 'p1' and dt > cast((abs(1) + 2) as string) and user_id > abs(1)"
     )
+    # df = sess.sql(
+    #     f"select * from {DEFAULT_DB}.{DEFAULT_TBL} "
+    #     f"where dt > 'p1' and dt <= 'p2' and user_id > abs(1)"
+    # )
     # df = sess.read_table(ident).select("user_id", "item_id", "dt").filter("dt > 'p1'").filter("user_id > 1")
     print(df.collect())
 
