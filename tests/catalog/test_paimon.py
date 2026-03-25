@@ -85,6 +85,11 @@ def catalog(paimon_catalog):
     return Catalog.from_paimon(paimon_catalog)
 
 
+@daft.func
+def add_and_format(a: int, b: int) -> str:
+    return f"Sum: {a + b}"
+
+
 def test_read_ao(sess: Session):
     daft.context.with_extra_options({"daft.paimon.source.split.target-size": "32mb"})
     table = _catalog.get_table(f"{DEFAULT_DB}.{DEFAULT_TBL}")
@@ -93,6 +98,10 @@ def test_read_ao(sess: Session):
     # table = sess.get_table(f"{DEFAULT_DB}.{DEFAULT_TBL}")
     # print(table.schema())
 
+    # df = sess.sql(
+    #     f"select * from {DEFAULT_DB}.{DEFAULT_TBL} "
+    #     f"where dt < 'p1' and dt > cast((abs(1) + 2) as string) and user_id > abs(1)"
+    # )
     df = sess.sql(
         f"select * from {DEFAULT_DB}.{DEFAULT_TBL} "
         f"where dt < 'p1' and dt > cast((abs(1) + 2) as string) and user_id > abs(1)"
