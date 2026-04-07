@@ -50,6 +50,10 @@ class DaftContext:
         """Get the added resources map (resource name -> Unix millisecond timestamp)."""
         return self._ctx._added_resources
 
+    @added_resources.setter
+    def added_resources(self, value: dict[str, int]) -> None:
+        self._ctx._added_resources = value
+
     def attach_subscriber(self, alias: str, subscriber: Subscriber) -> None:
         """Attaches a subscriber to this context.
 
