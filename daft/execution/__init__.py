@@ -1,6 +1,5 @@
-from daft.execution.resource_manager import DefaultResourceManager, ResourceManager
+from daft.execution.resource_manager import FileResourceManager
 
 __all__ = [
-    "DefaultResourceManager",
-    "ResourceManager",
+    "FileResourceManager",
 ]

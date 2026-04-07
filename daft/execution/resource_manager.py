@@ -10,47 +10,48 @@ import hashlib
 import logging
 import os
 import shutil
+import tarfile
 import tempfile
-from abc import ABC, abstractmethod
+import zipfile
 
 logger = logging.getLogger(__name__)
 
-
-class ResourceManager(ABC):
-    """Abstract base class for managing task resource dependencies.
-
-    A ResourceManager is responsible for resolving added_resources
-    (resource name -> timestamp) by downloading or fetching them to the
-    worker's local filesystem before task execution.
-    """
-
-    @abstractmethod
-    def resolve(self, added_resources: dict[str, int]) -> None:
-        """Resolve and fetch resources to the local worker.
-
-        Args:
-            added_resources: Mapping of resource name/URI to Unix millisecond timestamp.
-        """
-        ...
-
-    @abstractmethod
-    def get_resource_path(self, name: str) -> str | None:
-        """Get the local filesystem path for a previously resolved resource.
-
-        Args:
-            name: The resource name/URI used when adding the resource.
-
-        Returns:
-            Local path to the resource file, or None if not resolved.
-        """
-        ...
+# Supported file extensions
+_ARCHIVE_EXTENSIONS = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".zip", ".whl")
+_DIRECT_EXTENSIONS = (".py", ".egg")
+_SUPPORTED_EXTENSIONS = _ARCHIVE_EXTENSIONS + _DIRECT_EXTENSIONS
 
 
-class DefaultResourceManager(ResourceManager):
-    """Default resource manager that downloads resources to a local cache directory.
+def _get_extension(name: str) -> str:
+    """Extract the file extension, handling compound extensions like .tar.gz."""
+    lower = name.lower()
+    for ext in (".tar.gz", ".tar.bz2"):
+        if lower.endswith(ext):
+            return ext
+    _, ext = os.path.splitext(lower)
+    return ext
 
-    Resources are cached by name and timestamp. If a resource with the same
-    name and timestamp is already cached, it will not be re-downloaded.
+
+def _is_supported(name: str) -> bool:
+    """Check whether the resource file type is supported."""
+    return _get_extension(name) in _SUPPORTED_EXTENSIONS
+
+
+def _is_archive(name: str) -> bool:
+    """Check whether the resource is an archive that needs extraction."""
+    return _get_extension(name) in _ARCHIVE_EXTENSIONS
+
+
+class FileResourceManager:
+    """Resource manager that downloads file resources to the worker's local filesystem.
+
+    Supported file types:
+    - Python files: .py, .egg — downloaded to the current working directory.
+    - Archives: .tar, .tar.gz, .tgz, .tar.bz2, .zip, .whl — downloaded and extracted
+      to the current working directory.
+
+    Resources are tracked by name to avoid duplicate downloads within the same
+    worker lifecycle.
     """
 
     def __init__(self, cache_dir: str | None = None) -> None:
@@ -60,11 +61,14 @@ class DefaultResourceManager(ResourceManager):
 
     @property
     def cache_dir(self) -> str:
-        """Return the local cache directory for downloaded resources."""
+        """Return the temporary download cache directory."""
         return self._cache_dir
 
     def resolve(self, added_resources: dict[str, int]) -> None:
-        """Resolve added resources by downloading them to the local cache.
+        """Resolve added resources by downloading them to the worker.
+
+        For .py / .egg files, the file is placed in the current working directory.
+        For archive files, the archive is extracted into the current working directory.
 
         Args:
             added_resources: Mapping of resource name/URI to Unix millisecond timestamp.
@@ -77,7 +81,16 @@ class DefaultResourceManager(ResourceManager):
                 logger.debug("Resource '%s' already resolved, skipping", name)
                 continue
 
-            local_path = self._download_resource(name, timestamp)
+            if not _is_supported(name):
+                logger.warning(
+                    "Unsupported resource type for '%s'. "
+                    "Supported extensions: %s",
+                    name,
+                    ", ".join(_SUPPORTED_EXTENSIONS),
+                )
+                continue
+
+            local_path = self._fetch_resource(name, timestamp)
             if local_path is not None:
                 self._resolved[name] = local_path
                 logger.info("Resolved resource '%s' -> %s", name, local_path)
@@ -87,6 +100,9 @@ class DefaultResourceManager(ResourceManager):
     def get_resource_path(self, name: str) -> str | None:
         """Get the local path for a resolved resource.
 
+        For archives, returns the directory they were extracted to.
+        For .py / .egg files, returns the path in the working directory.
+
         Args:
             name: The resource name/URI.
 
@@ -95,10 +111,40 @@ class DefaultResourceManager(ResourceManager):
         """
         return self._resolved.get(name)
 
-    def _download_resource(self, name: str, timestamp: int) -> str | None:
-        """Download a single resource to the local cache.
+    def _fetch_resource(self, name: str, timestamp: int) -> str | None:
+        """Fetch a resource: download to cache, then place or extract into cwd.
 
-        Supports local files/directories and remote URIs (S3, GCS, HTTP, Azure, etc.)
+        Args:
+            name: Resource name, local path, or remote URI.
+            timestamp: Unix millisecond timestamp for cache invalidation.
+
+        Returns:
+            Final local path (file or extraction directory), or None on failure.
+        """
+        # Step 1: download to cache
+        cached_path = self._download_to_cache(name, timestamp)
+        if cached_path is None:
+            return None
+
+        # Step 2: place or extract into the current working directory
+        cwd = os.getcwd()
+
+        if _is_archive(name):
+            return self._extract_archive(cached_path, name, cwd)
+        else:
+            # .py / .egg — copy to cwd
+            dest = os.path.join(cwd, os.path.basename(name))
+            try:
+                shutil.copy2(cached_path, dest)
+                return dest
+            except OSError as e:
+                logger.warning("Failed to copy '%s' to working directory: %s", name, e)
+                return None
+
+    def _download_to_cache(self, name: str, timestamp: int) -> str | None:
+        """Download a resource to the local cache directory.
+
+        Supports local files and remote URIs (S3, GCS, HTTP, Azure, etc.)
         via Daft's native IO layer.
 
         Args:
@@ -106,42 +152,64 @@ class DefaultResourceManager(ResourceManager):
             timestamp: Unix millisecond timestamp for cache invalidation.
 
         Returns:
-            Local path to the downloaded resource, or None on failure.
+            Path to the cached file, or None on failure.
         """
-        # Create a cache key based on resource name and timestamp
         cache_key = hashlib.sha256(f"{name}:{timestamp}".encode()).hexdigest()[:16]
         basename = os.path.basename(name) if "/" in name or "\\" in name else name
-        local_path = os.path.join(self._cache_dir, f"{cache_key}_{basename}")
+        cached_path = os.path.join(self._cache_dir, f"{cache_key}_{basename}")
 
-        # If already cached with same timestamp, reuse
-        if os.path.exists(local_path):
-            logger.debug("Resource '%s' found in cache at %s", name, local_path)
-            self._resolved[name] = local_path
-            return local_path
+        # Already in cache
+        if os.path.exists(cached_path):
+            logger.debug("Resource '%s' found in cache at %s", name, cached_path)
+            return cached_path
 
-        # For local files/directories, copy them to the cache
-        if os.path.exists(name):
+        # Local file — copy to cache
+        if os.path.isfile(name):
             try:
-                if os.path.isdir(name):
-                    shutil.copytree(name, local_path)
-                else:
-                    shutil.copy2(name, local_path)
-                return local_path
+                shutil.copy2(name, cached_path)
+                return cached_path
             except OSError as e:
                 logger.warning("Failed to copy local resource '%s': %s", name, e)
                 return None
 
-        # For remote URIs (s3://, gs://, http://, https://, abfs://, hf://, etc.),
-        # use Daft's native IO layer to download
+        # Remote URI — download via Daft IO
         try:
             from daft.file import File
 
             remote_file = File(name)
             with remote_file.open() as f:
                 data = f.read()
-            with open(local_path, "wb") as out:
+            with open(cached_path, "wb") as out:
                 out.write(data)
-            return local_path
+            return cached_path
         except (OSError, ValueError, RuntimeError) as e:
             logger.warning("Failed to download remote resource '%s': %s", name, e)
+            return None
+
+    def _extract_archive(self, cached_path: str, name: str, dest_dir: str) -> str | None:
+        """Extract an archive file into the destination directory.
+
+        Args:
+            cached_path: Local path to the downloaded archive.
+            name: Original resource name (used for extension detection).
+            dest_dir: Directory to extract into.
+
+        Returns:
+            The destination directory path, or None on failure.
+        """
+        ext = _get_extension(name)
+        try:
+            if ext in (".zip", ".whl"):
+                with zipfile.ZipFile(cached_path, "r") as zf:
+                    zf.extractall(dest_dir)
+            elif ext in (".tar", ".tar.gz", ".tgz", ".tar.bz2"):
+                mode = "r:gz" if ext in (".tar.gz", ".tgz") else "r:bz2" if ext == ".tar.bz2" else "r:"
+                with tarfile.open(cached_path, mode) as tf:
+                    tf.extractall(dest_dir)
+            else:
+                logger.warning("Unknown archive format for '%s'", name)
+                return None
+            return dest_dir
+        except (tarfile.TarError, zipfile.BadZipFile, OSError) as e:
+            logger.warning("Failed to extract archive '%s': %s", name, e)
             return None
