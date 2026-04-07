@@ -45,6 +45,11 @@ class DaftContext:
     def daft_planning_config(self) -> PyDaftPlanningConfig:
         return self._ctx._daft_planning_config
 
+    @property
+    def added_resources(self) -> dict[str, int]:
+        """Get the added resources map (resource name -> Unix millisecond timestamp)."""
+        return self._ctx._added_resources
+
     def attach_subscriber(self, alias: str, subscriber: Subscriber) -> None:
         """Attaches a subscriber to this context.
 

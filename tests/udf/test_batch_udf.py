@@ -8,6 +8,7 @@ import pytest
 import daft
 from daft import DataType, Series, col
 from daft.ai.utils import RetryAfterError
+from daft.context import get_context
 from tests.conftest import get_tests_daft_runner_name
 
 
@@ -22,6 +23,7 @@ def test_batch_udf():
         return Series.from_arrow(result)
 
     df = daft.from_pydict({"x": [1, 2, 3], "y": [4, 5, 6]})
+    print(get_context().added_resources)
     actual = df.select(my_sum(col("x"), col("y"))).to_pydict()
 
     expected = {"x": [5, 7, 9]}
