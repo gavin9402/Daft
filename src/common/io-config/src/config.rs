@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AzureConfig, CosConfig, GCSConfig, HTTPConfig, S3Config, gravitino::GravitinoConfig,
-    huggingface::HuggingFaceConfig, tos::TosConfig, unity::UnityConfig,
+    huggingface::HuggingFaceConfig, oss::OssConfig, tos::TosConfig, unity::UnityConfig,
 };
 #[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct IOConfig {
@@ -21,6 +21,7 @@ pub struct IOConfig {
     /// disable suffix range requests, please use range with offset
     pub disable_suffix_range: bool,
     pub tos: TosConfig,
+    pub oss: OssConfig,
     pub cos: CosConfig,
     /// Additional backends configured via OpenDAL.
     /// Keys are scheme names (e.g. "oss", "cos"), values are key-value config maps.
@@ -71,6 +72,10 @@ impl IOConfig {
             self.tos.multiline_display().join(", ")
         ));
         res.push(format!(
+            "OSS config = {{ {} }}",
+            self.oss.multiline_display().join(", ")
+        ));
+        res.push(format!(
             "COS config = {{ {} }}",
             self.cos.multiline_display().join(", ")
         ));
@@ -114,11 +119,13 @@ impl Display for IOConfig {
 {}
 {}
 {}
+{}
 {}",
             self.s3,
             self.azure,
             self.gcs,
             self.tos,
+            self.oss,
             self.cos,
             self.http,
             self.unity,

@@ -7,6 +7,7 @@ mod gravitino;
 mod http;
 mod huggingface;
 mod local;
+mod oss;
 pub mod multipart;
 mod object_io;
 mod object_store_glob;
@@ -30,6 +31,7 @@ use google_cloud::GCSSource;
 use gravitino::GravitinoSource;
 use huggingface::HFSource;
 use opendal_source::OpenDALSource;
+use oss::OssSource;
 use tos::TosSource;
 #[cfg(feature = "python")]
 use unity::UnitySource;
@@ -46,7 +48,8 @@ use std::{borrow::Cow, collections::HashMap, hash::Hash, sync::Arc};
 
 use common_error::{DaftError, DaftResult};
 pub use common_io_config::{
-    AzureConfig, CosConfig, GCSConfig, GravitinoConfig, HTTPConfig, IOConfig, S3Config, TosConfig,
+    AzureConfig, CosConfig, GCSConfig, GravitinoConfig, HTTPConfig, IOConfig, OssConfig, S3Config,
+    TosConfig,
 };
 use futures::{FutureExt, stream::BoxStream};
 use object_io::StreamingRetryParams;
@@ -290,6 +293,9 @@ impl IOClient {
             SourceType::Tos => {
                 TosSource::get_client(&self.config.tos).await? as Arc<dyn ObjectSource>
             }
+            SourceType::Oss => {
+                OssSource::get_client(&self.config.oss).await? as Arc<dyn ObjectSource>
+            }
             SourceType::Gravitino => {
                 #[cfg(feature = "python")]
                 {
@@ -498,6 +504,7 @@ pub enum SourceType {
     HF,
     Unity,
     Tos,
+    Oss,
     Gravitino,
     OpenDAL { scheme: String },
 }
@@ -513,6 +520,7 @@ impl std::fmt::Display for SourceType {
             Self::HF => write!(f, "hf"),
             Self::Unity => write!(f, "UnityCatalog"),
             Self::Tos => write!(f, "tos"),
+            Self::Oss => write!(f, "oss"),
             Self::Gravitino => write!(f, "Gravitino"),
             Self::OpenDAL { scheme } => write!(f, "opendal({})", scheme),
         }
@@ -525,7 +533,7 @@ impl SourceType {
     pub fn supports_native_writer(&self) -> bool {
         matches!(
             self,
-            Self::File | Self::S3 | Self::Tos | Self::Gravitino | Self::OpenDAL { .. }
+            Self::File | Self::S3 | Self::Tos | Self::Oss | Self::Gravitino | Self::OpenDAL { .. }
         )
     }
 }
@@ -603,6 +611,7 @@ pub fn parse_url(input: &str) -> Result<(SourceType, Cow<'_, str>)> {
         "gcs" | "gs" => Ok((SourceType::GCS, fixed_input)),
         "hf" => Ok((SourceType::HF, fixed_input)),
         "tos" => Ok((SourceType::Tos, fixed_input)),
+        "oss" => Ok((SourceType::Oss, fixed_input)),
         "cos" | "cosn" => Ok((
             SourceType::OpenDAL {
                 scheme: "cos".to_string(),

@@ -8,6 +8,7 @@ mod gcs;
 mod gravitino;
 mod http;
 mod huggingface;
+mod oss;
 mod s3;
 mod tos;
 mod unity;
@@ -28,6 +29,7 @@ pub use crate::{
     gravitino::GravitinoConfig,
     http::HTTPConfig,
     huggingface::HuggingFaceConfig,
+    oss::OssConfig,
     s3::{S3Config, S3Credentials},
     tos::TosConfig,
     unity::UnityConfig,

@@ -1,4 +1,5 @@
 [dependencies]
+ali-oss-rs = {version = "0.2.5", default-features = false, features = ["async", "rust-tls"]}
 async-recursion = "1.0.4"
 async-stream = {workspace = true}
 async-trait = {workspace = true}
