@@ -20,6 +20,7 @@ import shutil
 import tarfile
 import tempfile
 import zipfile
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +109,8 @@ class FileResourceManager:
     worker lifecycle.
     """
 
-    def __init__(self, cache_dir: str | None = None) -> None:
-        self._cache_dir = cache_dir or os.path.join(tempfile.gettempdir(), "daft_resources")
+    def __init__(self) -> None:
+        self._cache_dir = os.path.join(tempfile.gettempdir(), "daft_resources")
         self._resolved: dict[str, str] = {}  # resource name -> local path
         os.makedirs(self._cache_dir, exist_ok=True)
 
@@ -141,8 +142,7 @@ class FileResourceManager:
 
             if not _is_supported(actual_name):
                 logger.warning(
-                    "Unsupported resource type for '%s'. "
-                    "Supported extensions: %s",
+                    "Unsupported resource type for '%s'. Supported extensions: %s",
                     name,
                     ", ".join(_SUPPORTED_EXTENSIONS),
                 )
@@ -265,7 +265,9 @@ class FileResourceManager:
                 with zipfile.ZipFile(cached_path, "r") as zf:
                     zf.extractall(dest_dir)
             elif ext in (".tar", ".tar.gz", ".tgz", ".tar.bz2"):
-                mode = "r:gz" if ext in (".tar.gz", ".tgz") else "r:bz2" if ext == ".tar.bz2" else "r:"
+                mode: Literal["r:", "r:gz", "r:bz2"] = (
+                    "r:gz" if ext in (".tar.gz", ".tgz") else "r:bz2" if ext == ".tar.bz2" else "r:"
+                )
                 with tarfile.open(cached_path, mode) as tf:
                     tf.extractall(dest_dir)
             else:
@@ -275,3 +277,6 @@ class FileResourceManager:
         except (tarfile.TarError, zipfile.BadZipFile, OSError) as e:
             logger.warning("Failed to extract archive '%s': %s", name, e)
             return None
+
+
+file_resource_manager = FileResourceManager()

@@ -1,4 +1,4 @@
-from daft.execution.resource_manager import FileResourceManager
+from daft.execution.file_resource_manager import FileResourceManager
 
 __all__ = [
     "FileResourceManager",

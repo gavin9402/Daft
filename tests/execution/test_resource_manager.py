@@ -8,7 +8,7 @@ import zipfile
 
 import pytest
 
-from daft.execution.resource_manager import FileResourceManager, _get_extension, _is_archive, _is_supported, _parse_resource_name
+from daft.execution.file_resource_manager import _get_extension, _is_archive, _is_supported, file_resource_manager
 
 
 class TestHelpers:
@@ -80,18 +80,8 @@ class TestHelpers:
 class TestFileResourceManager:
     """Tests for FileResourceManager."""
 
-    def test_creation_default_cache_dir(self):
-        mgr = FileResourceManager()
-        assert os.path.isdir(mgr.cache_dir)
-
-    def test_creation_custom_cache_dir(self, tmp_path):
-        cache_dir = str(tmp_path / "my_cache")
-        mgr = FileResourceManager(cache_dir=cache_dir)
-        assert mgr.cache_dir == cache_dir
-        assert os.path.isdir(cache_dir)
-
     def test_resolve_empty(self):
-        mgr = FileResourceManager()
+        mgr = file_resource_manager
         mgr.resolve({})
 
     def test_resolve_py_file_to_cwd(self, tmp_path, monkeypatch):
@@ -99,12 +89,11 @@ class TestFileResourceManager:
         src = tmp_path / "helper.py"
         src.write_text("print('hello')")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({str(src): 1000})
 
         result = mgr.get_resource_path(str(src))
@@ -119,12 +108,11 @@ class TestFileResourceManager:
         src = tmp_path / "mylib.egg"
         src.write_bytes(b"egg content")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({str(src): 2000})
 
         result = mgr.get_resource_path(str(src))
@@ -138,12 +126,11 @@ class TestFileResourceManager:
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("inner/data.txt", "zip content")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({str(zip_path): 3000})
 
         result = mgr.get_resource_path(str(zip_path))
@@ -163,12 +150,11 @@ class TestFileResourceManager:
         with tarfile.open(tar_path, "w:gz") as tf:
             tf.add(inner_file, arcname="src_content.txt")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({str(tar_path): 4000})
 
         result = mgr.get_resource_path(str(tar_path))
@@ -186,12 +172,11 @@ class TestFileResourceManager:
         with tarfile.open(tar_path, "w:bz2") as tf:
             tf.add(inner_file, arcname="bz2_content.txt")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({str(tar_path): 5000})
 
         assert os.path.exists(work_dir / "bz2_content.txt")
@@ -202,12 +187,11 @@ class TestFileResourceManager:
         with zipfile.ZipFile(whl_path, "w") as zf:
             zf.writestr("mypackage/__init__.py", "__version__ = '1.0'")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({str(whl_path): 6000})
 
         result = mgr.get_resource_path(str(whl_path))
@@ -221,16 +205,14 @@ class TestFileResourceManager:
         src = tmp_path / "data.csv"
         src.write_text("a,b,c")
 
-        cache_dir = str(tmp_path / "cache")
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({str(src): 1000})
 
         assert mgr.get_resource_path(str(src)) is None
 
     def test_unsupported_types_examples(self, tmp_path):
         """Various unsupported types are all rejected."""
-        cache_dir = str(tmp_path / "cache")
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
 
         for ext in (".csv", ".txt", ".bin", ".png", ".json", ".parquet"):
             src = tmp_path / f"file{ext}"
@@ -243,12 +225,11 @@ class TestFileResourceManager:
         src = tmp_path / "script.py"
         src.write_text("x = 1")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({str(src): 1000})
         path1 = mgr.get_resource_path(str(src))
 
@@ -257,13 +238,12 @@ class TestFileResourceManager:
         assert path1 == path2
 
     def test_get_resource_path_unknown(self):
-        mgr = FileResourceManager()
+        mgr = file_resource_manager
         assert mgr.get_resource_path("nonexistent") is None
 
     def test_resolve_nonexistent_resource(self, tmp_path):
         """Resolving a nonexistent .py resource returns None."""
-        cache_dir = str(tmp_path / "cache")
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({"/nonexistent/path/script.py": 3000})
         assert mgr.get_resource_path("/nonexistent/path/script.py") is None
 
@@ -274,12 +254,11 @@ class TestFileResourceManager:
         file_b = tmp_path / "b.py"
         file_b.write_text("b")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({str(file_a): 1000, str(file_b): 2000})
 
         assert mgr.get_resource_path(str(file_a)) is not None
@@ -306,12 +285,11 @@ class TestRemoteDownload:
 
     def test_download_remote_py_file(self, tmp_path, monkeypatch):
         """Remote .py files are downloaded via daft.File and placed in cwd."""
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
 
         class MockFileHandle:
             def read(self, size=None):
@@ -342,8 +320,7 @@ class TestRemoteDownload:
             assert f.read() == "print('remote')"
 
     def test_download_remote_failure_returns_none(self, tmp_path, monkeypatch):
-        cache_dir = str(tmp_path / "cache")
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
 
         class FailingFile:
             def __init__(self, url, **kwargs):
@@ -361,8 +338,7 @@ class TestRemoteDownload:
 
     def test_unsupported_remote_type_rejected(self, tmp_path):
         """Remote URIs with unsupported extensions are rejected."""
-        cache_dir = str(tmp_path / "cache")
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
 
         mgr.resolve({"s3://bucket/model.bin": 7000})
         assert mgr.get_resource_path("s3://bucket/model.bin") is None

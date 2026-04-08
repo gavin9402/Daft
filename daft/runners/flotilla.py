@@ -123,9 +123,9 @@ class RaySwordfishActor:
         set_compute_runtime_num_worker_threads(num_cpus)
         set_event_loop(asyncio.get_running_loop())
 
-        from daft.execution.resource_manager import FileResourceManager
+        from daft.execution.file_resource_manager import file_resource_manager
 
-        self._resource_manager = FileResourceManager()
+        self._resource_manager = file_resource_manager
 
         self.ip = ray.util.get_node_ip_address()
         self.native_executor = NativeExecutor(is_flotilla_worker=True, ip=self.ip)
