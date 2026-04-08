@@ -22,28 +22,6 @@ class TestHelpers:
     @pytest.mark.parametrize(
         "name,expected",
         [
-            ("model.py", True),
-            ("lib.egg", True),
-            ("archive.zip", True),
-            ("data.tar", True),
-            ("data.tar.gz", True),
-            ("data.tgz", True),
-            ("data.tar.bz2", True),
-            ("package.whl", True),
-            ("model.bin", False),
-            ("data.csv", False),
-            ("image.png", False),
-            ("s3://bucket/model.py", True),
-            ("s3://bucket/data.tar.gz", True),
-            ("https://example.com/file.txt", False),
-            ("archive.zip#/tmp/dir", True),
-            ("data.tar.gz#/opt", True),
-            ("model.py#something", True),  # '#' is part of name, still .py
-        ],
-    )
-    @pytest.mark.parametrize(
-        "name,expected",
-        [
             ("archive.zip", True),
             ("data.tar", True),
             ("data.tar.gz", True),
@@ -321,7 +299,8 @@ class TestRemoteDownload:
         with open(local_path) as f:
             assert f.read() == "print('remote')"
 
-    def test_download_remote_failure_returns_none(self, tmp_path, monkeypatch):
+    def test_download_remote_failure_raises(self, tmp_path, monkeypatch):
+        """Remote download failure raises RuntimeError after retries."""
         mgr = file_resource_manager
 
         class FailingFile:
@@ -331,12 +310,14 @@ class TestRemoteDownload:
             def open(self):
                 raise ConnectionError("Network unreachable")
 
+        import daft.execution.file_resource_manager as frm
         import daft.file
 
         monkeypatch.setattr(daft.file, "File", FailingFile)
+        monkeypatch.setattr(frm, "_RETRY_BACKOFF_SECS", 0)
 
-        mgr.resolve({"s3://nonexistent/script.py": 6000})
-        assert mgr.get_resource_path("s3://nonexistent/script.py") is None
+        with pytest.raises(RuntimeError, match="Failed to download"):
+            mgr.resolve({"s3://nonexistent/script.py": 6000})
 
     def test_unsupported_remote_type_rejected(self, tmp_path):
         """Remote URIs with unsupported extensions are rejected."""
@@ -344,6 +325,48 @@ class TestRemoteDownload:
 
         mgr.resolve({"s3://bucket/model.bin": 7000})
         assert mgr.get_resource_path("s3://bucket/model.bin") is None
+
+    def test_download_retries_then_succeeds(self, tmp_path, monkeypatch):
+        """Download succeeds after transient failures."""
+        work_dir = tmp_path / "workdir"
+        work_dir.mkdir()
+        monkeypatch.chdir(work_dir)
+
+        mgr = file_resource_manager
+
+        call_count = 0
+
+        class TransientFailFile:
+            def __init__(self, url, **kwargs):
+                pass
+
+            def open(self):
+                nonlocal call_count
+                call_count += 1
+                if call_count < 3:
+                    raise ConnectionError("Temporary failure")
+                return MockFileHandle()
+
+        class MockFileHandle:
+            def read(self, size=None):
+                return b"recovered content"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        import daft.execution.file_resource_manager as frm
+        import daft.file
+
+        monkeypatch.setattr(daft.file, "File", TransientFailFile)
+        monkeypatch.setattr(frm, "_RETRY_BACKOFF_SECS", 0)
+
+        mgr.resolve({"s3://bucket/recover.py": 9000})
+        result = mgr.get_resource_path("s3://bucket/recover.py")
+        assert result is not None
+        assert call_count == 3
 
 
 class TestParseResourceName:

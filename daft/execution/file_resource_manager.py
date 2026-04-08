@@ -19,6 +19,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import time
 import zipfile
 from typing import Literal
 
@@ -27,6 +28,12 @@ logger = logging.getLogger(__name__)
 # Supported file extensions
 _ARCHIVE_EXTENSIONS = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".zip", ".whl")
 _DIRECT_EXTENSIONS = (".py", ".egg")
+
+_REMOTE_SCHEMES = ("s3://", "gs://", "gcs://", "http://", "https://", "az://", "abfs://", "oss://")
+
+# Retry configuration for remote downloads
+_MAX_DOWNLOAD_RETRIES = 3
+_RETRY_BACKOFF_SECS = 1.0
 
 
 def _get_extension(name: str) -> str:
@@ -167,6 +174,12 @@ class FileResourceManager:
         Returns:
             Final local path (file or extraction directory), or None on failure.
         """
+        # Reject unsupported file types early
+        ext = _get_extension(name)
+        if ext not in _ARCHIVE_EXTENSIONS and ext not in _DIRECT_EXTENSIONS:
+            logger.warning("Unsupported file type '%s' for resource '%s'", ext, name)
+            return None
+
         # Step 1: download to cache
         cached_path = self._download_to_cache(name, timestamp)
         if cached_path is None:
@@ -217,22 +230,43 @@ class FileResourceManager:
                 shutil.copy2(name, cached_path)
                 return cached_path
             except OSError as e:
-                logger.warning("Failed to copy local resource '%s': %s", name, e)
+                logger.error("Failed to copy local resource '%s': %s", name, e)
                 return None
 
-        # Remote URI — download via Daft IO
-        try:
-            from daft.file import File
-
-            remote_file = File(name)
-            with remote_file.open() as f:
-                data = f.read()
-            with open(cached_path, "wb") as out:
-                out.write(data)
-            return cached_path
-        except (OSError, ValueError, RuntimeError) as e:
-            logger.warning("Failed to download remote resource '%s': %s", name, e)
+        # Non-local, non-remote — cannot resolve
+        if not any(name.startswith(s) for s in _REMOTE_SCHEMES):
+            logger.error("Unsupported resource type '%s'", name)
             return None
+
+        # Remote URI — download via Daft IO with retry
+        last_error: Exception | None = None
+        for attempt in range(1, _MAX_DOWNLOAD_RETRIES + 1):
+            try:
+                from daft.file import File
+
+                remote_file = File(name)
+                with remote_file.open() as f:
+                    data = f.read()
+                with open(cached_path, "wb") as out:
+                    out.write(data)
+                return cached_path
+            except Exception as e:
+                last_error = e
+                if attempt < _MAX_DOWNLOAD_RETRIES:
+                    wait = _RETRY_BACKOFF_SECS * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Download attempt %d/%d failed for '%s': %s. Retrying in %.1fs...",
+                        attempt,
+                        _MAX_DOWNLOAD_RETRIES,
+                        name,
+                        e,
+                        wait,
+                    )
+                    time.sleep(wait)
+
+        raise RuntimeError(
+            f"Failed to download resource '{name}' after {_MAX_DOWNLOAD_RETRIES} attempts: {last_error}"
+        ) from last_error
 
     def _extract_archive(self, cached_path: str, name: str, dest_dir: str) -> str | None:
         """Extract an archive file into the destination directory.
