@@ -2,6 +2,13 @@
 
 Before task execution,
 the ResourceManager downloads added resources to the worker's local filesystem.
+
+Archive resources support the ``name#path`` format to specify an extraction
+directory.  For example:
+
+- ``archive.zip`` or ``archive.zip#`` — extract to the current working directory.
+- ``archive.zip#/tmp/mydir`` — extract to ``/tmp/mydir``.
+- ``s3://bucket/data.tar.gz#/opt/data`` — download and extract to ``/opt/data``.
 """
 
 from __future__ import annotations
@@ -23,8 +30,10 @@ _SUPPORTED_EXTENSIONS = _ARCHIVE_EXTENSIONS + _DIRECT_EXTENSIONS
 
 
 def _get_extension(name: str) -> str:
-    """Extract the file extension, handling compound extensions like .tar.gz."""
-    lower = name.lower()
+    """Extract the file extension, handling ``#path`` suffix and compound extensions."""
+    # Strip #path suffix for archive extraction path
+    actual_name = name.split("#")[0] if "#" in name else name
+    lower = actual_name.lower()
     for ext in (".tar.gz", ".tar.bz2"):
         if lower.endswith(ext):
             return ext
@@ -42,13 +51,58 @@ def _is_archive(name: str) -> bool:
     return _get_extension(name) in _ARCHIVE_EXTENSIONS
 
 
+def _parse_resource_name(name: str) -> tuple[str, str | None]:
+    """Parse a resource name that may contain a ``#path`` extraction directory.
+
+    The ``#path`` suffix is only meaningful for archive types.  For non-archive
+    files (``.py``, ``.egg``, etc.) the ``#`` is treated as part of the name.
+
+    Args:
+        name: Resource name, possibly containing ``#path``.
+
+    Returns:
+        A tuple of ``(actual_name, extract_path)``.  *extract_path* is ``None``
+        when no explicit extraction directory is specified.
+
+    Examples:
+        >>> _parse_resource_name("archive.zip")
+        ('archive.zip', None)
+        >>> _parse_resource_name("archive.zip#")
+        ('archive.zip', None)
+        >>> _parse_resource_name("archive.zip#/tmp/dir")
+        ('archive.zip', '/tmp/dir')
+        >>> _parse_resource_name("s3://bucket/data.tar.gz#/opt/data")
+        ('s3://bucket/data.tar.gz', '/opt/data')
+        >>> _parse_resource_name("model.py#something")
+        ('model.py#something', None)
+    """
+    if "#" not in name:
+        return name, None
+
+    # Split on the last '#'
+    idx = name.rfind("#")
+    candidate = name[:idx]
+
+    # Only split if the part before '#' looks like an archive
+    candidate_ext = _get_extension(candidate)
+    if candidate_ext not in _ARCHIVE_EXTENSIONS:
+        # Not an archive — treat '#' as part of the name
+        return name, None
+
+    path_part = name[idx + 1:]
+    return candidate, path_part if path_part else None
+
+
 class FileResourceManager:
     """Resource manager that downloads file resources to the worker's local filesystem.
 
     Supported file types:
     - Python files: .py, .egg — downloaded to the current working directory.
     - Archives: .tar, .tar.gz, .tgz, .tar.bz2, .zip, .whl — downloaded and extracted
-      to the current working directory.
+      to the current working directory (or to a custom directory via ``name#path``).
+
+    Archive resources may use the ``name#path`` format to specify an extraction
+    directory.  See :func:`_parse_resource_name` for details.
 
     Resources are tracked by name to avoid duplicate downloads within the same
     worker lifecycle.
@@ -68,10 +122,12 @@ class FileResourceManager:
         """Resolve added resources by downloading them to the worker.
 
         For .py / .egg files, the file is placed in the current working directory.
-        For archive files, the archive is extracted into the current working directory.
+        For archive files, the archive is extracted into the current working directory
+        unless a ``#path`` suffix specifies an alternative extraction directory.
 
         Args:
             added_resources: Mapping of resource name/URI to Unix millisecond timestamp.
+                Archive names may use ``name#path`` format.
         """
         if not added_resources:
             return
@@ -81,7 +137,9 @@ class FileResourceManager:
                 logger.debug("Resource '%s' already resolved, skipping", name)
                 continue
 
-            if not _is_supported(name):
+            actual_name, extract_path = _parse_resource_name(name)
+
+            if not _is_supported(actual_name):
                 logger.warning(
                     "Unsupported resource type for '%s'. "
                     "Supported extensions: %s",
@@ -90,7 +148,7 @@ class FileResourceManager:
                 )
                 continue
 
-            local_path = self._fetch_resource(name, timestamp)
+            local_path = self._fetch_resource(actual_name, timestamp, extract_path)
             if local_path is not None:
                 self._resolved[name] = local_path
                 logger.info("Resolved resource '%s' -> %s", name, local_path)
@@ -111,12 +169,14 @@ class FileResourceManager:
         """
         return self._resolved.get(name)
 
-    def _fetch_resource(self, name: str, timestamp: int) -> str | None:
-        """Fetch a resource: download to cache, then place or extract into cwd.
+    def _fetch_resource(self, name: str, timestamp: int, extract_path: str | None = None) -> str | None:
+        """Fetch a resource: download to cache, then place or extract.
 
         Args:
-            name: Resource name, local path, or remote URI.
+            name: Resource name (without ``#path``), local path, or remote URI.
             timestamp: Unix millisecond timestamp for cache invalidation.
+            extract_path: Optional extraction directory for archives.  When
+                ``None``, archives are extracted to the current working directory.
 
         Returns:
             Final local path (file or extraction directory), or None on failure.
@@ -126,13 +186,15 @@ class FileResourceManager:
         if cached_path is None:
             return None
 
-        # Step 2: place or extract into the current working directory
-        cwd = os.getcwd()
-
+        # Step 2: place or extract
         if _is_archive(name):
-            return self._extract_archive(cached_path, name, cwd)
+            dest_dir = extract_path if extract_path is not None else os.getcwd()
+            if extract_path is not None:
+                os.makedirs(extract_path, exist_ok=True)
+            return self._extract_archive(cached_path, name, dest_dir)
         else:
             # .py / .egg — copy to cwd
+            cwd = os.getcwd()
             dest = os.path.join(cwd, os.path.basename(name))
             try:
                 shutil.copy2(cached_path, dest)

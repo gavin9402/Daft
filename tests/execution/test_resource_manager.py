@@ -8,7 +8,7 @@ import zipfile
 
 import pytest
 
-from daft.execution.resource_manager import FileResourceManager, _get_extension, _is_archive, _is_supported
+from daft.execution.resource_manager import FileResourceManager, _get_extension, _is_archive, _is_supported, _parse_resource_name
 
 
 class TestHelpers:
@@ -31,6 +31,9 @@ class TestHelpers:
             ("s3://bucket/model.py", True),
             ("s3://bucket/data.tar.gz", True),
             ("https://example.com/file.txt", False),
+            ("archive.zip#/tmp/dir", True),
+            ("data.tar.gz#/opt", True),
+            ("model.py#something", True),  # '#' is part of name, still .py
         ],
     )
     def test_is_supported(self, name, expected):
@@ -47,6 +50,9 @@ class TestHelpers:
             ("package.whl", True),
             ("model.py", False),
             ("lib.egg", False),
+            ("archive.zip#/tmp/dir", True),
+            ("data.tar.gz#/opt", True),
+            ("model.py#something", False),
         ],
     )
     def test_is_archive(self, name, expected):
@@ -63,6 +69,8 @@ class TestHelpers:
             ("data.tar", ".tar"),
             ("archive.zip", ".zip"),
             ("package.whl", ".whl"),
+            ("archive.zip#/tmp/dir", ".zip"),
+            ("data.tar.gz#/opt", ".tar.gz"),
         ],
     )
     def test_get_extension(self, name, expected):
@@ -358,3 +366,111 @@ class TestRemoteDownload:
 
         mgr.resolve({"s3://bucket/model.bin": 7000})
         assert mgr.get_resource_path("s3://bucket/model.bin") is None
+
+
+class TestParseResourceName:
+    """Tests for _parse_resource_name."""
+
+    @pytest.mark.parametrize(
+        "name,expected",
+        [
+            ("archive.zip", ("archive.zip", None)),
+            ("archive.zip#", ("archive.zip", None)),
+            ("archive.zip#/tmp/dir", ("archive.zip", "/tmp/dir")),
+            ("s3://bucket/data.tar.gz#/opt/data", ("s3://bucket/data.tar.gz", "/opt/data")),
+            ("model.py", ("model.py", None)),
+            ("model.py#something", ("model.py#something", None)),  # non-archive, # is part of name
+            ("data.tar.bz2#/extract", ("data.tar.bz2", "/extract")),
+            ("package.whl#/wheels", ("package.whl", "/wheels")),
+        ],
+    )
+    def test_parse_resource_name(self, name, expected):
+        assert _parse_resource_name(name) == expected
+
+
+class TestArchiveExtractPath:
+    """Tests for archive extraction with #path."""
+
+    def test_resolve_zip_extracts_to_custom_path(self, tmp_path, monkeypatch):
+        """archive.zip#/path should extract to the specified path."""
+        zip_path = tmp_path / "archive.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("inner/data.txt", "custom path content")
+
+        cache_dir = str(tmp_path / "cache")
+        work_dir = tmp_path / "workdir"
+        work_dir.mkdir()
+        monkeypatch.chdir(work_dir)
+
+        extract_dir = str(tmp_path / "custom_extract")
+        resource_name = f"{zip_path}#{extract_dir}"
+
+        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr.resolve({resource_name: 3000})
+
+        result = mgr.get_resource_path(resource_name)
+        assert result is not None
+        assert result == extract_dir
+        assert os.path.exists(os.path.join(extract_dir, "inner", "data.txt"))
+
+    def test_resolve_zip_empty_hash_extracts_to_cwd(self, tmp_path, monkeypatch):
+        """archive.zip# (empty path) should extract to cwd."""
+        zip_path = tmp_path / "archive.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("data.txt", "cwd content")
+
+        cache_dir = str(tmp_path / "cache")
+        work_dir = tmp_path / "workdir"
+        work_dir.mkdir()
+        monkeypatch.chdir(work_dir)
+
+        resource_name = f"{zip_path}#"
+
+        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr.resolve({resource_name: 3000})
+
+        assert os.path.exists(work_dir / "data.txt")
+
+    def test_resolve_tar_gz_extracts_to_custom_path(self, tmp_path, monkeypatch):
+        """data.tar.gz#/path should extract to the specified path."""
+        inner_file = tmp_path / "content.txt"
+        inner_file.write_text("tar custom path")
+
+        tar_path = tmp_path / "data.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tf:
+            tf.add(inner_file, arcname="content.txt")
+
+        cache_dir = str(tmp_path / "cache")
+        work_dir = tmp_path / "workdir"
+        work_dir.mkdir()
+        monkeypatch.chdir(work_dir)
+
+        extract_dir = str(tmp_path / "tar_extract")
+        resource_name = f"{tar_path}#{extract_dir}"
+
+        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr.resolve({resource_name: 4000})
+
+        assert os.path.exists(os.path.join(extract_dir, "content.txt"))
+
+    def test_resolve_same_archive_different_paths(self, tmp_path, monkeypatch):
+        """Same archive with different #path should be treated as different resources."""
+        zip_path = tmp_path / "archive.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("file.txt", "hello")
+
+        cache_dir = str(tmp_path / "cache")
+        work_dir = tmp_path / "workdir"
+        work_dir.mkdir()
+        monkeypatch.chdir(work_dir)
+
+        dir_a = str(tmp_path / "dir_a")
+        dir_b = str(tmp_path / "dir_b")
+
+        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr.resolve({f"{zip_path}#{dir_a}": 1000, f"{zip_path}#{dir_b}": 1000})
+
+        assert mgr.get_resource_path(f"{zip_path}#{dir_a}") == dir_a
+        assert mgr.get_resource_path(f"{zip_path}#{dir_b}") == dir_b
+        assert os.path.exists(os.path.join(dir_a, "file.txt"))
+        assert os.path.exists(os.path.join(dir_b, "file.txt"))
