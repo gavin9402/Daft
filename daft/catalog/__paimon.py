@@ -10,12 +10,16 @@ from pypaimon.catalog.catalog_exception import (
     DatabaseNotExistException,
     TableNotExistException,
 )
+from pypaimon.catalog.rest.rest_catalog import RESTCatalog
+from pypaimon.function import FileFunctionDefinition
 from pypaimon.table.table import Table as InnerTable
 
-from daft.catalog import Catalog, Function, Identifier, NotFoundError, Properties, Schema, Table
+from daft.catalog import Catalog, Function, Identifier, NotFoundError, Properties, PyFileResourceFunction, Schema, Table
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from pypaimon.function import FunctionDefinition
 
     from daft.dataframe import DataFrame
     from daft.io.partitioning import PartitionField
@@ -142,7 +146,21 @@ class PaimonCatalog(Catalog):
     ###
 
     def _get_function(self, ident: Identifier) -> Function:
-        raise NotFoundError(f"Function '{ident}' not found in catalog '{self.name}'")
+        if not isinstance(self._inner, RESTCatalog):
+            raise NotImplementedError("Only Paimon RESTCatalog support file function.")
+
+        paimon_daft_func: FunctionDefinition = self._inner.get_function(str(ident)).definitions()["daft"]
+        if not isinstance(paimon_daft_func, FileFunctionDefinition):
+            raise NotImplementedError("Only Paimon file function support.")
+        if paimon_daft_func.language != "python":
+            raise NotImplementedError("Only python language support.")
+
+        return PyFileResourceFunction(
+            identifier=ident,
+            module_name=paimon_daft_func.class_name,
+            binding_name=paimon_daft_func.function_name,
+            resources=[item.uri for item in paimon_daft_func.file_resources()],
+        )
 
     def _get_table(self, ident: Identifier) -> PaimonTable:
         paimon_ident = _to_paimon_ident_str(ident)

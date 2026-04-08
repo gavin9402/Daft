@@ -8,7 +8,12 @@ import zipfile
 
 import pytest
 
-from daft.execution.file_resource_manager import _get_extension, _is_archive, _is_supported, file_resource_manager
+from daft.execution.file_resource_manager import (
+    _get_extension,
+    _is_archive,
+    _parse_resource_name,
+    file_resource_manager,
+)
 
 
 class TestHelpers:
@@ -36,9 +41,6 @@ class TestHelpers:
             ("model.py#something", True),  # '#' is part of name, still .py
         ],
     )
-    def test_is_supported(self, name, expected):
-        assert _is_supported(name) == expected
-
     @pytest.mark.parametrize(
         "name,expected",
         [
@@ -373,7 +375,6 @@ class TestArchiveExtractPath:
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("inner/data.txt", "custom path content")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
@@ -381,7 +382,7 @@ class TestArchiveExtractPath:
         extract_dir = str(tmp_path / "custom_extract")
         resource_name = f"{zip_path}#{extract_dir}"
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({resource_name: 3000})
 
         result = mgr.get_resource_path(resource_name)
@@ -395,14 +396,13 @@ class TestArchiveExtractPath:
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("data.txt", "cwd content")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
 
         resource_name = f"{zip_path}#"
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({resource_name: 3000})
 
         assert os.path.exists(work_dir / "data.txt")
@@ -416,7 +416,6 @@ class TestArchiveExtractPath:
         with tarfile.open(tar_path, "w:gz") as tf:
             tf.add(inner_file, arcname="content.txt")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
@@ -424,7 +423,7 @@ class TestArchiveExtractPath:
         extract_dir = str(tmp_path / "tar_extract")
         resource_name = f"{tar_path}#{extract_dir}"
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({resource_name: 4000})
 
         assert os.path.exists(os.path.join(extract_dir, "content.txt"))
@@ -435,7 +434,6 @@ class TestArchiveExtractPath:
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("file.txt", "hello")
 
-        cache_dir = str(tmp_path / "cache")
         work_dir = tmp_path / "workdir"
         work_dir.mkdir()
         monkeypatch.chdir(work_dir)
@@ -443,7 +441,7 @@ class TestArchiveExtractPath:
         dir_a = str(tmp_path / "dir_a")
         dir_b = str(tmp_path / "dir_b")
 
-        mgr = FileResourceManager(cache_dir=cache_dir)
+        mgr = file_resource_manager
         mgr.resolve({f"{zip_path}#{dir_a}": 1000, f"{zip_path}#{dir_b}": 1000})
 
         assert mgr.get_resource_path(f"{zip_path}#{dir_a}") == dir_a
