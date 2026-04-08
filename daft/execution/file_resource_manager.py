@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 # Supported file extensions
 _ARCHIVE_EXTENSIONS = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".zip", ".whl")
 _DIRECT_EXTENSIONS = (".py", ".egg")
-_SUPPORTED_EXTENSIONS = _ARCHIVE_EXTENSIONS + _DIRECT_EXTENSIONS
 
 
 def _get_extension(name: str) -> str:
@@ -40,11 +39,6 @@ def _get_extension(name: str) -> str:
             return ext
     _, ext = os.path.splitext(lower)
     return ext
-
-
-def _is_supported(name: str) -> bool:
-    """Check whether the resource file type is supported."""
-    return _get_extension(name) in _SUPPORTED_EXTENSIONS
 
 
 def _is_archive(name: str) -> bool:
@@ -90,7 +84,7 @@ def _parse_resource_name(name: str) -> tuple[str, str | None]:
         # Not an archive — treat '#' as part of the name
         return name, None
 
-    path_part = name[idx + 1:]
+    path_part = name[idx + 1 :]
     return candidate, path_part if path_part else None
 
 
@@ -139,14 +133,6 @@ class FileResourceManager:
                 continue
 
             actual_name, extract_path = _parse_resource_name(name)
-
-            if not _is_supported(actual_name):
-                logger.warning(
-                    "Unsupported resource type for '%s'. Supported extensions: %s",
-                    name,
-                    ", ".join(_SUPPORTED_EXTENSIONS),
-                )
-                continue
 
             local_path = self._fetch_resource(actual_name, timestamp, extract_path)
             if local_path is not None:

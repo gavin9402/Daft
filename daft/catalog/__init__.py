@@ -68,6 +68,7 @@ __all__ = [
     "Identifier",
     "NotFoundError",
     "Properties",
+    "PyFileResourceFunction",
     "Schema",
     "Table",
 ]
@@ -898,7 +899,7 @@ class PyFileResourceFunction(Function):
         func_inst = getattr(module, self._binding_name, None)
         if func_inst is None:
             raise AttributeError(f"Module '{self._module_name}' has no attribute '{self._binding_name}'")
-        return func_inst(args, kwargs)
+        return func_inst(*args, **kwargs)
 
 
 class Table(ABC):

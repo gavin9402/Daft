@@ -449,3 +449,30 @@ def test_catalog_register_cls_udf_from_external_module():
         ]
     }
     assert result == expected
+
+
+def test_py_file_resource_function():
+    """Test PyFileResourceFunction with resources directory files."""
+    from daft.catalog import Identifier, PyFileResourceFunction
+
+    # Create PyFileResourceFunction with two resource files
+    func = PyFileResourceFunction(
+        identifier=Identifier("test_func"),
+        module_name="my_func",
+        binding_name="dictionary_lookup",
+        resources=["resources/mock_dictionary.json", "resources/my_func.py"],
+    )
+
+    # Register the function to the catalog
+    _function_catalog.create_function("test_func", func)
+
+    # Verify the function is registered correctly
+    retrieved_func = _function_catalog.get_function("test_func")
+    assert retrieved_func is func
+
+    # Test using the function in a dataframe
+    df = daft.from_pydict({"name": ["alice", "bob", "charlie"]})
+    result = df.select(func(df["name"])).to_pydict()
+
+    # Verify the results
+    assert result == {"name": ["Hello Alice", "Hello Bob", "Nobody"]}
