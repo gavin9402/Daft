@@ -39,10 +39,12 @@ df2 = daft.sql("SELECT * FROM my_table")
 
 from __future__ import annotations
 
-import warnings
+import time
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+
+from daft.context import get_context
 from daft.daft import PyIdentifier
 
 from daft.dataframe import DataFrame
@@ -50,6 +52,7 @@ from daft.dataframe import DataFrame
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, overload
 
+from daft.execution.file_resource_manager import file_resource_manager
 from daft.logical.schema import Schema
 
 if TYPE_CHECKING:
@@ -864,6 +867,38 @@ class Function(ABC):
 
     def __str__(self) -> str:
         return str(self._identifier)
+
+
+class PyFileResourceFunction(Function):
+    """Function defined in py file and may have other resources dependencies."""
+
+    def __init__(
+        self,
+        identifier: Identifier,
+        module_name: str,
+        binding_name: str,
+        resources: list[str] | None = None,
+    ) -> None:
+        super().__init__(identifier)
+        self._module_name = module_name
+        self._binding_name = binding_name
+        self._resources = resources or []
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Expression:
+        added_resource = {}
+        for file_resource in self._resources:
+            added_resource[file_resource] = int(time.time() * 1000)
+
+        ctx = get_context()
+        ctx.added_resources = added_resource
+
+        file_resource_manager.resolve(added_resource)
+
+        module = __import__(self._module_name)
+        func_inst = getattr(module, self._binding_name, None)
+        if func_inst is None:
+            raise AttributeError(f"Module '{self._module_name}' has no attribute '{self._binding_name}'")
+        return func_inst(args, kwargs)
 
 
 class Table(ABC):
