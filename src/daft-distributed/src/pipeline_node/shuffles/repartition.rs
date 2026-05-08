@@ -88,7 +88,12 @@ impl RepartitionNode {
             transpose_materialized_outputs_from_stream(outputs, self.num_partitions).await?;
 
         self.shuffle_backend
-            .emit_read_tasks(transposed_outputs, self.as_ref(), result_tx)
+            .emit_read_tasks(
+                transposed_outputs,
+                self.as_ref(),
+                result_tx,
+                self.num_partitions,
+            )
             .await
     }
 }
@@ -156,6 +161,7 @@ impl PipelineNodeImpl for RepartitionNode {
         let backend_name = match self.shuffle_backend.backend() {
             DistributedShuffleBackend::Ray => "RayShuffle",
             DistributedShuffleBackend::Flight(_) => "FlightShuffle",
+            DistributedShuffleBackend::Celeborn(_) => "CelebornShuffle",
         };
         let mut res = vec![format!(
             "{backend_name}: {}",

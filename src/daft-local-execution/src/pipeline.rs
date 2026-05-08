@@ -17,13 +17,13 @@ use daft_core::{join::JoinSide, prelude::Schema};
 use daft_dsl::{common_treenode::ConcreteTreeNode, join::get_common_join_cols};
 pub use daft_local_plan::InputId;
 use daft_local_plan::{
-    AsofJoin, CommitWrite, Concat, CrossJoin, Dedup, Explode, Filter, FlightShuffleReadInput,
-    GatherWrite, GlobScan, HashAggregate, HashJoin, InMemoryScan, IntoBatches, Limit,
-    LocalNodeContext, LocalPhysicalPlan, MonotonicallyIncreasingId, PhysicalScan, PhysicalWrite,
-    Pivot, Project, RepartitionWrite, Sample, ShuffleBackend, ShuffleReadBackend, Sort,
-    SortMergeJoin, SourceId, TopN, UDFProject, UnGroupedAggregate, Unpivot, VLLMProject,
-    WindowOrderByOnly, WindowPartitionAndDynamicFrame, WindowPartitionAndOrderBy,
-    WindowPartitionOnly,
+    AsofJoin, CelebornShuffleReadInput, CommitWrite, Concat, CrossJoin, Dedup, Explode, Filter,
+    FlightShuffleReadInput, GatherWrite, GlobScan, HashAggregate, HashJoin, InMemoryScan,
+    IntoBatches, Limit, LocalNodeContext, LocalPhysicalPlan, MonotonicallyIncreasingId,
+    PhysicalScan, PhysicalWrite, Pivot, Project, RepartitionWrite, Sample, ShuffleBackend,
+    ShuffleReadBackend, Sort, SortMergeJoin, SourceId, TopN, UDFProject, UnGroupedAggregate,
+    Unpivot, VLLMProject, WindowOrderByOnly, WindowPartitionAndDynamicFrame,
+    WindowPartitionAndOrderBy, WindowPartitionOnly,
 };
 use daft_logical_plan::{JoinType, stats::StatsState};
 use daft_micropartition::{MicroPartition, MicroPartitionRef};
@@ -277,6 +277,10 @@ pub struct BuilderContext {
             daft_dsl::expr::bound_expr::BoundExpr,
         )>,
     >,
+    /// Optional Celeborn shuffle client. Populated by the executor when the
+    /// active shuffle algorithm is "celeborn"; kept as `None` otherwise so that
+    /// pipelines using Ray/Flight shuffles incur no extra cost.
+    celeborn_client: Option<Arc<dyn daft_shuffles::client::celeborn::CelebornClient>>,
 }
 
 impl BuilderContext {
@@ -298,6 +302,7 @@ impl BuilderContext {
             context,
             shuffle_server,
             checkpoint: std::cell::RefCell::new(None),
+            celeborn_client: None,
         }
     }
 
@@ -322,6 +327,24 @@ impl BuilderContext {
         daft_dsl::expr::bound_expr::BoundExpr,
     )> {
         self.checkpoint.borrow().clone()
+    }
+
+    /// Inject a Celeborn client into this builder context. Must be called
+    /// before `translate_physical_plan_to_pipeline` if any plan node uses the
+    /// Celeborn shuffle backend.
+    #[allow(dead_code)]
+    pub fn with_celeborn_client(
+        mut self,
+        client: Arc<dyn daft_shuffles::client::celeborn::CelebornClient>,
+    ) -> Self {
+        self.celeborn_client = Some(client);
+        self
+    }
+
+    pub fn celeborn_client(
+        &self,
+    ) -> Option<Arc<dyn daft_shuffles::client::celeborn::CelebornClient>> {
+        self.celeborn_client.clone()
     }
 
     pub fn next_id(&self) -> usize {
@@ -1607,6 +1630,9 @@ fn physical_plan_to_pipeline(
                     )
                     .boxed()
                 }
+                daft_local_plan::ShuffleBackend::Celeborn { .. } => {
+                    unimplemented!("Celeborn into_partitions is not yet supported")
+                }
             }
         }
         LocalPhysicalPlan::RepartitionWrite(RepartitionWrite {
@@ -1653,6 +1679,36 @@ fn physical_plan_to_pipeline(
                         plan_name: physical_plan.name(),
                     })?;
 
+                    BlockingSinkNode::new(
+                        Arc::new(repartition_sink),
+                        child_node,
+                        stats_state.clone(),
+                        ctx,
+                        context,
+                    )
+                    .boxed()
+                }
+                ShuffleBackend::Celeborn {
+                    shuffle_id,
+                    num_mappers,
+                    ..
+                } => {
+                    // The client is injected once per query via
+                    // `BuilderContext::with_celeborn_client`. We unwrap with a
+                    // descriptive panic because reaching this branch without a
+                    // client implies a configuration bug at the executor layer
+                    // (`shuffle_algorithm == "celeborn"` was selected but no
+                    // client was supplied).
+                    let client = ctx.celeborn_client().expect(
+                        "Celeborn client must be initialized via BuilderContext::with_celeborn_client when using the celeborn shuffle algorithm",
+                    );
+                    let repartition_sink = RepartitionSink::new_celeborn(
+                        *num_partitions,
+                        *shuffle_id,
+                        repartition_spec.clone(),
+                        client,
+                        *num_mappers,
+                    );
                     BlockingSinkNode::new(
                         Arc::new(repartition_sink),
                         child_node,
@@ -1710,6 +1766,9 @@ fn physical_plan_to_pipeline(
                     )
                     .boxed()
                 }
+                ShuffleBackend::Celeborn { .. } => {
+                    unimplemented!("Celeborn gather is not yet supported")
+                }
             }
         }
         LocalPhysicalPlan::ShuffleRead(daft_local_plan::ShuffleRead {
@@ -1732,7 +1791,7 @@ fn physical_plan_to_pipeline(
                 )
                 .boxed()
             }
-            ShuffleReadBackend::Flight => {
+            ShuffleReadBackend::Flight { .. } => {
                 let (tx, rx) = create_unbounded_channel::<(InputId, Vec<FlightShuffleReadInput>)>();
                 input_senders.insert(*source_id, InputSender::FlightShuffle(tx));
                 let (local_server, local_address) = ctx.shuffle_server().expect(
@@ -1740,6 +1799,25 @@ fn physical_plan_to_pipeline(
                 );
                 let source =
                     ShuffleReadSource::new(rx, local_server, local_address, schema.clone(), cfg);
+                SourceNode::new(Box::new(source), stats_state.clone(), ctx, context).boxed()
+            }
+            ShuffleReadBackend::Celeborn { shuffle_id, .. } => {
+                let client = ctx.celeborn_client().expect(
+                    "Celeborn client must be initialized via BuilderContext::with_celeborn_client when using the celeborn shuffle algorithm",
+                );
+                let (tx, rx) =
+                    create_unbounded_channel::<(InputId, Vec<CelebornShuffleReadInput>)>();
+                input_senders.insert(*source_id, InputSender::CelebornShuffle(tx));
+                let source = crate::sources::shuffle_read::CelebornShuffleReadSource::try_new(
+                    rx,
+                    *shuffle_id,
+                    client,
+                    schema.clone(),
+                    cfg,
+                )
+                .with_context(|_| PipelineCreationSnafu {
+                    plan_name: physical_plan.name(),
+                })?;
                 SourceNode::new(Box::new(source), stats_state.clone(), ctx, context).boxed()
             }
         },

@@ -7,7 +7,9 @@ use daft_schema::schema::SchemaRef;
 use crate::pipeline_node::{
     DistributedPipelineNode,
     shuffles::{
-        backends::{DistributedShuffleBackend, FlightShuffleBackendConfig},
+        backends::{
+            CelebornShuffleBackendConfig, DistributedShuffleBackend, FlightShuffleBackendConfig,
+        },
         gather::GatherNode,
         pre_shuffle_merge::PreShuffleMergeNode,
         repartition::RepartitionNode,
@@ -18,13 +20,38 @@ use crate::pipeline_node::{
 impl LogicalPlanToPipelineNodeTranslator {
     /// Pick the shuffle backend implied by the current execution config.
     pub(crate) fn select_backend(&self) -> DistributedShuffleBackend {
-        if self.plan_config.config.shuffle_algorithm.as_str() == "flight_shuffle" {
-            DistributedShuffleBackend::Flight(FlightShuffleBackendConfig {
+        match self.plan_config.config.shuffle_algorithm.as_str() {
+            "flight_shuffle" => DistributedShuffleBackend::Flight(FlightShuffleBackendConfig {
+                shuffle_id: 0,
                 shuffle_dirs: self.plan_config.config.flight_shuffle_dirs.clone(),
-                ..Default::default()
-            })
-        } else {
-            DistributedShuffleBackend::Ray
+                compression: None,
+            }),
+            "celeborn" => {
+                // `master_endpoints` is the only Celeborn-specific value that
+                // must be set explicitly by the user; the remaining knobs
+                // (compression, timeouts) have application-wide defaults that
+                // we read straight from the global execution config.
+                let master_endpoints = self
+                    .plan_config
+                    .config
+                    .celeborn_master_endpoints
+                    .clone()
+                    .expect(
+                        "celeborn_master_endpoints must be configured when shuffle_algorithm == \"celeborn\"",
+                    );
+                DistributedShuffleBackend::Celeborn(CelebornShuffleBackendConfig {
+                    // Real shuffle id is assigned later inside `ShuffleBackend::new`
+                    // via `make_shuffle_id(context)`; the value here is a
+                    // placeholder that will be overwritten.
+                    shuffle_id: 0,
+                    master_endpoints,
+                    app_id: self.plan_config.query_id.to_string(),
+                    compression: self.plan_config.config.celeborn_compression.clone(),
+                    push_data_timeout_ms: self.plan_config.config.celeborn_push_data_timeout_ms,
+                    fetch_data_timeout_ms: self.plan_config.config.celeborn_fetch_data_timeout_ms,
+                })
+            }
+            _ => DistributedShuffleBackend::Ray,
         }
     }
 
@@ -34,7 +61,39 @@ impl LogicalPlanToPipelineNodeTranslator {
         schema: SchemaRef,
         child: DistributedPipelineNode,
     ) -> DaftResult<DistributedPipelineNode> {
-        let backend = self.select_backend();
+        let backend = match self.plan_config.config.shuffle_algorithm.as_str() {
+            "flight_shuffle" => DistributedShuffleBackend::Flight(FlightShuffleBackendConfig {
+                shuffle_id: 0,
+                shuffle_dirs: self.plan_config.config.flight_shuffle_dirs.clone(),
+                compression: None,
+            }),
+            "celeborn" => {
+                // `master_endpoints` is the only Celeborn-specific value that
+                // must be set explicitly by the user; the remaining knobs
+                // (compression, timeouts) have application-wide defaults that
+                // we read straight from the global execution config.
+                let master_endpoints = self
+                    .plan_config
+                    .config
+                    .celeborn_master_endpoints
+                    .clone()
+                    .expect(
+                        "celeborn_master_endpoints must be configured when shuffle_algorithm == \"celeborn\"",
+                    );
+                DistributedShuffleBackend::Celeborn(CelebornShuffleBackendConfig {
+                    // Real shuffle id is assigned later inside `ShuffleBackend::new`
+                    // via `make_shuffle_id(context)`; the value here is a
+                    // placeholder that will be overwritten.
+                    shuffle_id: 0,
+                    master_endpoints,
+                    app_id: self.plan_config.query_id.to_string(),
+                    compression: self.plan_config.config.celeborn_compression.clone(),
+                    push_data_timeout_ms: self.plan_config.config.celeborn_push_data_timeout_ms,
+                    fetch_data_timeout_ms: self.plan_config.config.celeborn_fetch_data_timeout_ms,
+                })
+            }
+            _ => DistributedShuffleBackend::Ray,
+        };
         self.gen_repartition_node_with_backend(repartition_spec, schema, child, backend)
     }
 
@@ -101,6 +160,7 @@ impl LogicalPlanToPipelineNodeTranslator {
             "pre_shuffle_merge" => Ok(true),
             "map_reduce" => Ok(false),
             "flight_shuffle" => Ok(false), // Flight shuffle will be handled separately
+            "celeborn" => Ok(false), // Celeborn handles aggregation cluster-side, no local pre-merge needed
             "auto" => {
                 let total_num_partitions = input_num_partitions * target_num_partitions;
                 let geometric_mean = (total_num_partitions as f64).sqrt() as usize;

@@ -35,7 +35,29 @@ pub(crate) type BlockingSinkSinkResult<Op> =
 pub(crate) enum BlockingSinkOutput {
     Partitions(Vec<MicroPartition>),
     FlightPartitionRefs(Vec<FlightPartitionRef>),
+    ShuffleMetadata(ShuffleMetadata),
 }
+
+#[allow(dead_code)]
+pub(crate) struct ShuffleMetadata {
+    pub(crate) partitions: Vec<ShufflePartitionMetadata>,
+}
+
+#[allow(dead_code)]
+pub(crate) struct ShufflePartitionMetadata {
+    pub(crate) num_rows: usize,
+    pub(crate) size_bytes: usize,
+}
+
+impl ShufflePartitionMetadata {
+    pub(crate) fn new(num_rows: usize, size_bytes: usize) -> Self {
+        Self {
+            num_rows,
+            size_bytes,
+        }
+    }
+}
+
 pub(crate) type BlockingSinkFinalizeResult = OperatorOutput<DaftResult<BlockingSinkOutput>>;
 
 pub(crate) trait BlockingSink: Send + Sync {
@@ -288,6 +310,10 @@ impl<Op: BlockingSink + 'static> BlockingSinkNode<Op> {
                             })
                             .await;
                     }
+                }
+                BlockingSinkOutput::ShuffleMetadata(_metadata) => {
+                    // Celeborn shuffle metadata is informational only; data
+                    // has already been pushed to the remote service during sink().
                 }
             }
             if let Some((store, _, _, _)) = &checkpoint {

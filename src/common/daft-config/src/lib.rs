@@ -152,6 +152,10 @@ pub struct DaftExecutionConfig {
     pub enable_dynamic_batching: bool,
     pub dynamic_batching_strategy: String,
     pub flight_shuffle_dirs: Vec<String>,
+    pub celeborn_master_endpoints: Option<String>,
+    pub celeborn_compression: String,
+    pub celeborn_push_data_timeout_ms: u64,
+    pub celeborn_fetch_data_timeout_ms: u64,
     pub enable_multi_glob_path_tasks: bool,
 }
 
@@ -199,6 +203,10 @@ impl Default for DaftExecutionConfig {
             enable_dynamic_batching: false,
             dynamic_batching_strategy: "auto".to_string(),
             flight_shuffle_dirs: vec!["/tmp".to_string()],
+            celeborn_master_endpoints: None,
+            celeborn_compression: "lz4".to_string(),
+            celeborn_push_data_timeout_ms: 120_000,
+            celeborn_fetch_data_timeout_ms: 120_000,
             enable_multi_glob_path_tasks: false,
         }
     }

@@ -11,6 +11,7 @@ use daft_logical_plan::partitioning::RepartitionSpec;
 use daft_micropartition::MicroPartition;
 use daft_partition_refs::FlightPartitionRef;
 use daft_shuffles::{
+    client::celeborn::CelebornClient,
     server::flight_server::ShuffleFlightServer,
     shuffle_cache::{InProgressShuffleCache, partition_ref_id},
 };
@@ -19,6 +20,7 @@ use tracing::{Span, instrument};
 
 use super::blocking_sink::{
     BlockingSink, BlockingSinkFinalizeResult, BlockingSinkOutput, BlockingSinkSinkResult,
+    ShuffleMetadata, ShufflePartitionMetadata,
 };
 use crate::{
     ExecutionTaskSpawner,
@@ -46,6 +48,7 @@ pub(crate) struct FlightRepartitionState {
 }
 
 impl FlightRepartitionState {
+    #[allow(dead_code)]
     async fn push(&self, parts: Vec<MicroPartition>) -> DaftResult<()> {
         let push_futures = self
             .partitions
@@ -57,12 +60,33 @@ impl FlightRepartitionState {
     }
 }
 
+/// Per-mapper state for the Celeborn backend.
+///
+/// One instance is created per concurrent input task (i.e. one mapper). It
+/// owns: a shared client handle (`client`), the map task identifier
+/// (`map_id`, derived from `InputId`), and per-partition counters maintained
+/// across `sink()` calls so that `finalize()` can produce
+/// `ShufflePartitionMetadata` without a second pass over the data.
+pub(crate) struct CelebornRepartitionState {
+    client: Arc<dyn CelebornClient>,
+    shuffle_id: u64,
+    map_id: u32,
+    attempt_id: u32,
+    /// Cumulative row count per partition observed by this mapper.
+    rows_per_partition: Vec<usize>,
+    /// Cumulative byte count per partition observed by this mapper (Arrow IPC
+    /// stream bytes actually pushed).
+    bytes_per_partition: Vec<usize>,
+}
+
 pub(crate) enum RepartitionState {
     Ray(RayRepartitionState),
     Flight(FlightRepartitionState),
+    Celeborn(CelebornRepartitionState),
 }
 
 impl RepartitionState {
+    #[allow(dead_code)]
     async fn push(&mut self, parts: Vec<MicroPartition>) -> DaftResult<()> {
         match self {
             Self::Ray(state) => {
@@ -70,6 +94,9 @@ impl RepartitionState {
                 Ok(())
             }
             Self::Flight(state) => state.push(parts).await,
+            Self::Celeborn(_) => {
+                unreachable!("Celeborn state push is handled in sink() directly")
+            }
         }
     }
 }
@@ -88,6 +115,15 @@ enum RepartitionBackend {
         // Only accessed from the single-threaded event loop; Mutex is just for Sync.
         partitions: Mutex<HashMap<InputId, Arc<Vec<Arc<InProgressShuffleCache>>>>>,
     },
+    Celeborn {
+        num_partitions: usize,
+        shuffle_id: u64,
+        repartition_spec: RepartitionSpec,
+        client: Arc<dyn CelebornClient>,
+        /// Total number of mappers participating in this shuffle. Required by
+        /// Celeborn so that reducers know when all map tasks have completed.
+        num_mappers: u32,
+    },
 }
 
 impl RepartitionBackend {
@@ -95,6 +131,7 @@ impl RepartitionBackend {
         match &self {
             Self::Ray { .. } => "Ray",
             Self::Flight { .. } => "Flight",
+            Self::Celeborn { .. } => "Celeborn",
         }
     }
 }
@@ -143,6 +180,26 @@ impl RepartitionSink {
             num_partitions,
         })
     }
+
+    pub fn new_celeborn(
+        num_partitions: usize,
+        shuffle_id: u64,
+        repartition_spec: RepartitionSpec,
+        client: Arc<dyn CelebornClient>,
+        num_mappers: u32,
+    ) -> Self {
+        Self {
+            backend: RepartitionBackend::Celeborn {
+                num_partitions,
+                shuffle_id,
+                repartition_spec: repartition_spec.clone(),
+                client,
+                num_mappers,
+            },
+            repartition_spec,
+            num_partitions,
+        }
+    }
 }
 
 impl BlockingSink for RepartitionSink {
@@ -152,37 +209,125 @@ impl BlockingSink for RepartitionSink {
     fn sink(
         &self,
         input: MicroPartition,
-        mut state: Self::State,
+        state: Self::State,
         _runtime_stats: Arc<Self::Stats>,
         spawner: &ExecutionTaskSpawner,
     ) -> BlockingSinkSinkResult<Self> {
         let repartition_spec = self.repartition_spec.clone();
         let num_partitions = self.num_partitions;
 
-        spawner
-            .spawn(
-                async move {
-                    let partitioned = match repartition_spec {
-                        RepartitionSpec::Hash(config) => {
-                            let bound_exprs = BoundExpr::bind_all(&config.by, &input.schema())?;
-                            input.partition_by_hash(&bound_exprs, num_partitions)?
-                        }
-                        RepartitionSpec::Random(config) => {
-                            input.partition_by_random(num_partitions, config.seed.unwrap_or(0))?
-                        }
-                        RepartitionSpec::Range(config) => input.partition_by_range(
-                            &config.by,
-                            &config.boundaries,
-                            &config.descending,
-                        )?,
-                    };
+        match (&self.backend, state) {
+            (RepartitionBackend::Ray, RepartitionState::Ray(mut state)) => spawner
+                .spawn(
+                    async move {
+                        let partitioned = match repartition_spec {
+                            RepartitionSpec::Hash(config) => {
+                                let bound_exprs = BoundExpr::bind_all(&config.by, &input.schema())?;
+                                input.partition_by_hash(&bound_exprs, num_partitions)?
+                            }
+                            RepartitionSpec::Random(config) => input
+                                .partition_by_random(num_partitions, config.seed.unwrap_or(0))?,
+                            RepartitionSpec::Range(config) => input.partition_by_range(
+                                &config.by,
+                                &config.boundaries,
+                                &config.descending,
+                            )?,
+                        };
 
-                    state.push(partitioned).await?;
-                    Ok(state)
+                        state.push(partitioned);
+                        Ok(RepartitionState::Ray(state))
+                    },
+                    Span::current(),
+                )
+                .into(),
+            (RepartitionBackend::Flight { .. }, RepartitionState::Flight(state)) => spawner
+                .spawn(
+                    async move {
+                        let partitioned = match repartition_spec {
+                            RepartitionSpec::Hash(config) => {
+                                let bound_exprs = BoundExpr::bind_all(&config.by, &input.schema())?;
+                                input.partition_by_hash(&bound_exprs, num_partitions)?
+                            }
+                            RepartitionSpec::Random(config) => input
+                                .partition_by_random(num_partitions, config.seed.unwrap_or(0))?,
+                            RepartitionSpec::Range(config) => input.partition_by_range(
+                                &config.by,
+                                &config.boundaries,
+                                &config.descending,
+                            )?,
+                        };
+                        let push_futures = state
+                            .partitions
+                            .iter()
+                            .zip(partitioned)
+                            .map(|(cache, partition)| cache.push_partition_data(partition));
+                        futures::future::try_join_all(push_futures).await?;
+                        Ok(RepartitionState::Flight(state))
+                    },
+                    Span::current(),
+                )
+                .into(),
+            (
+                RepartitionBackend::Celeborn {
+                    repartition_spec,
+                    num_partitions,
+                    ..
                 },
-                Span::current(),
-            )
-            .into()
+                RepartitionState::Celeborn(mut state),
+            ) => {
+                let num_partitions = *num_partitions;
+                let partition_by = match repartition_spec {
+                    RepartitionSpec::Hash(config) => Some(config.by.clone()),
+                    RepartitionSpec::Random(_) => None,
+                    RepartitionSpec::Range(_) => {
+                        unreachable!("Range repartition is not supported for celeborn shuffle")
+                    }
+                };
+
+                spawner
+                    .spawn(
+                        async move {
+                            let partitioned = match &partition_by {
+                                Some(partition_by) => {
+                                    let partition_by =
+                                        BoundExpr::bind_all(partition_by, &input.schema())?;
+                                    input.partition_by_hash(&partition_by, num_partitions)?
+                                }
+                                None => input.partition_by_random(num_partitions, 0)?,
+                            };
+
+                            // For each non-empty target partition, serialize as Arrow IPC
+                            // stream bytes and push to the Celeborn cluster. Empty
+                            // partitions are skipped to avoid wasted RPCs; the reducer
+                            // tolerates partitions with zero blocks.
+                            for (partition_idx, mp) in partitioned.into_iter().enumerate() {
+                                let num_rows = mp.len();
+                                if num_rows == 0 {
+                                    continue;
+                                }
+                                let ipc_bytes = mp.write_to_ipc_stream()?;
+                                state
+                                    .client
+                                    .push_data(
+                                        state.shuffle_id,
+                                        state.map_id,
+                                        state.attempt_id,
+                                        partition_idx as u32,
+                                        &ipc_bytes,
+                                    )
+                                    .await?;
+                                state.rows_per_partition[partition_idx] += num_rows;
+                                state.bytes_per_partition[partition_idx] += ipc_bytes.len();
+                            }
+
+                            Ok(RepartitionState::Celeborn(state))
+                        },
+                        Span::current(),
+                    )
+                    .into()
+            }
+            _ => panic!("RepartitionSink state/backend mismatch"),
+        }
     }
 
     #[instrument(skip_all, name = "RepartitionSink::finalize")]
@@ -199,7 +344,7 @@ impl BlockingSink for RepartitionSink {
                     .into_iter()
                     .map(|state| match state {
                         RepartitionState::Ray(state) => state,
-                        RepartitionState::Flight(_) => {
+                        RepartitionState::Flight(_) | RepartitionState::Celeborn(_) => {
                             panic!("RepartitionSink state/backend mismatch")
                         }
                     })
@@ -256,7 +401,7 @@ impl BlockingSink for RepartitionSink {
                     .into_iter()
                     .map(|state| match state {
                         RepartitionState::Flight(state) => state,
-                        RepartitionState::Ray(_) => {
+                        RepartitionState::Ray(_) | RepartitionState::Celeborn(_) => {
                             panic!("RepartitionSink state/backend mismatch")
                         }
                     })
@@ -290,6 +435,65 @@ impl BlockingSink for RepartitionSink {
                                     })
                                     .collect(),
                             ))
+                        },
+                        Span::current(),
+                    )
+                    .into()
+            }
+            RepartitionBackend::Celeborn { num_mappers, .. } => {
+                let num_mappers = *num_mappers;
+                let num_partitions = self.num_partitions;
+                let states = states
+                    .into_iter()
+                    .map(|state| match state {
+                        RepartitionState::Celeborn(state) => state,
+                        RepartitionState::Ray(_) | RepartitionState::Flight(_) => {
+                            panic!("RepartitionSink state/backend mismatch")
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                spawner
+                    .spawn(
+                        async move {
+                            // 1. Notify Celeborn that every local mapper attempt has
+                            //    finished pushing data. Celeborn requires exactly one
+                            //    `mapper_end` per `(shuffle_id, map_id, attempt_id)`.
+                            for state in &states {
+                                state
+                                    .client
+                                    .mapper_end(
+                                        state.shuffle_id,
+                                        state.map_id,
+                                        state.attempt_id,
+                                        num_mappers,
+                                    )
+                                    .await?;
+                            }
+
+                            // 2. Aggregate per-partition row/byte counters across all
+                            //    local mappers. The resulting metadata represents this
+                            //    sink's contribution to the global shuffle output.
+                            let mut rows_per_partition = vec![0usize; num_partitions];
+                            let mut bytes_per_partition = vec![0usize; num_partitions];
+                            for state in states {
+                                for (i, count) in state.rows_per_partition.iter().enumerate() {
+                                    rows_per_partition[i] += *count;
+                                }
+                                for (i, count) in state.bytes_per_partition.iter().enumerate() {
+                                    bytes_per_partition[i] += *count;
+                                }
+                            }
+
+                            Ok(BlockingSinkOutput::ShuffleMetadata(ShuffleMetadata {
+                                partitions: rows_per_partition
+                                    .into_iter()
+                                    .zip(bytes_per_partition)
+                                    .map(|(num_rows, size_bytes)| {
+                                        ShufflePartitionMetadata::new(num_rows, size_bytes)
+                                    })
+                                    .collect(),
+                            }))
                         },
                         Span::current(),
                     )
@@ -363,6 +567,26 @@ impl BlockingSink for RepartitionSink {
                 };
                 Ok(RepartitionState::Flight(FlightRepartitionState {
                     partitions: partition_set,
+                }))
+            }
+            RepartitionBackend::Celeborn {
+                num_partitions,
+                shuffle_id,
+                client,
+                ..
+            } => {
+                // `InputId` is u32 in the local-execution layer; map it directly
+                // to Celeborn's `map_id`. `attempt_id` is fixed at 0 because Daft
+                // does not currently use speculative execution at the worker
+                // level — when it does, this will need to be sourced from the
+                // task scheduler.
+                Ok(RepartitionState::Celeborn(CelebornRepartitionState {
+                    client: client.clone(),
+                    shuffle_id: *shuffle_id,
+                    map_id: input_id,
+                    attempt_id: 0,
+                    rows_per_partition: vec![0usize; *num_partitions],
+                    bytes_per_partition: vec![0usize; *num_partitions],
                 }))
             }
         }

@@ -2272,16 +2272,6 @@ pub struct IntoPartitions {
     pub context: LocalNodeContext,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ShuffleBackend {
-    Ray,
-    Flight {
-        shuffle_id: u64,
-        shuffle_dirs: Vec<String>,
-        compression: Option<String>,
-    },
-}
-
 #[derive(Serialize, Deserialize)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 pub struct VLLMProject {
@@ -2295,9 +2285,37 @@ pub struct VLLMProject {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ShuffleBackend {
+    Ray,
+    Flight {
+        shuffle_id: u64,
+        shuffle_dirs: Vec<String>,
+        compression: Option<String>,
+    },
+    Celeborn {
+        shuffle_id: u64,
+        master_endpoints: String,
+        app_id: String,
+        compression: String,
+        num_mappers: u32,
+        push_data_timeout_ms: u64,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ShuffleReadBackend {
     Ray,
-    Flight,
+    Flight {
+        shuffle_id: u64,
+        server_cache_mapping: HashMap<String, Vec<u32>>,
+    },
+    Celeborn {
+        shuffle_id: u64,
+        master_endpoints: String,
+        app_id: String,
+        compression: String,
+        fetch_data_timeout_ms: u64,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2332,4 +2350,9 @@ pub struct ShuffleRead {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlightShuffleReadInput {
     pub refs: Vec<FlightPartitionRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CelebornShuffleReadInput {
+    pub partition_idx: usize,
 }

@@ -2446,6 +2446,10 @@ class PyDaftExecutionConfig:
         dynamic_batching_strategy: str | None = None,
         flight_shuffle_dirs: list[str] | None = None,
         enable_multi_glob_path_tasks: bool | None = None,
+        celeborn_master_endpoints: str | None = None,
+        celeborn_compression: str | None = None,
+        celeborn_push_data_timeout_ms: int | None = None,
+        celeborn_fetch_data_timeout_ms: int | None = None,
     ) -> PyDaftExecutionConfig: ...
     @property
     def enable_scan_task_split_and_merge(self) -> bool: ...

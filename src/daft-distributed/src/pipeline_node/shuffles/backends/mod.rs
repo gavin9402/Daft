@@ -15,9 +15,12 @@ use crate::{
     utils::channel::Sender,
 };
 
+mod celeborn;
 mod flight;
 mod ray;
 
+pub(crate) use celeborn::CelebornShuffleBackendConfig;
+use celeborn::CelebornShuffleReadSpec;
 pub(crate) use flight::FlightShuffleBackendConfig;
 
 fn make_shuffle_id(context: &PipelineNodeContext) -> u64 {
@@ -28,6 +31,7 @@ fn make_shuffle_id(context: &PipelineNodeContext) -> u64 {
 pub(crate) enum DistributedShuffleBackend {
     Ray,
     Flight(FlightShuffleBackendConfig),
+    Celeborn(CelebornShuffleBackendConfig),
 }
 
 #[derive(Clone)]
@@ -55,6 +59,16 @@ impl ShuffleBackend {
                         compression: backend.compression,
                     })
                 }
+                DistributedShuffleBackend::Celeborn(backend) => {
+                    DistributedShuffleBackend::Celeborn(CelebornShuffleBackendConfig {
+                        shuffle_id: make_shuffle_id(context),
+                        master_endpoints: backend.master_endpoints,
+                        app_id: backend.app_id,
+                        compression: backend.compression,
+                        push_data_timeout_ms: backend.push_data_timeout_ms,
+                        fetch_data_timeout_ms: backend.fetch_data_timeout_ms,
+                    })
+                }
             },
         }
     }
@@ -77,6 +91,9 @@ impl ShuffleBackend {
             DistributedShuffleBackend::Flight(backend) => {
                 flight::register_cleanup(backend, plan_context);
             }
+            DistributedShuffleBackend::Celeborn(backend) => {
+                celeborn::register_cleanup(backend, plan_context);
+            }
         }
     }
 
@@ -90,6 +107,14 @@ impl ShuffleBackend {
                 shuffle_id: cfg.shuffle_id,
                 shuffle_dirs: cfg.shuffle_dirs,
                 compression: cfg.compression,
+            },
+            DistributedShuffleBackend::Celeborn(cfg) => LocalShuffleBackend::Celeborn {
+                shuffle_id: cfg.shuffle_id,
+                master_endpoints: cfg.master_endpoints,
+                app_id: cfg.app_id,
+                compression: cfg.compression,
+                num_mappers: 0,
+                push_data_timeout_ms: cfg.push_data_timeout_ms,
             },
         }
     }
@@ -135,7 +160,10 @@ impl ShuffleBackend {
                 let shuffle_read = LocalPhysicalPlan::shuffle_read(
                     node_id,
                     self.schema.clone(),
-                    ShuffleReadBackend::Flight,
+                    ShuffleReadBackend::Flight {
+                        shuffle_id: 0,
+                        server_cache_mapping: Default::default(),
+                    },
                     StatsState::NotMaterialized,
                     LocalNodeContext::new(Some(node_id as usize)),
                 );
@@ -145,6 +173,9 @@ impl ShuffleBackend {
                     vec![FlightShuffleReadInput { refs: flight_refs }],
                 )
             }
+            DistributedShuffleBackend::Celeborn(_) => {
+                unreachable!("Celeborn does not use produce_read_task; use emit_read_tasks instead")
+            }
         }
     }
 
@@ -153,6 +184,7 @@ impl ShuffleBackend {
         partition_groups: Vec<Vec<MaterializedOutput>>,
         node: &dyn PipelineNodeImpl,
         result_tx: Sender<SwordfishTaskBuilder>,
+        num_partitions: usize,
     ) -> DaftResult<()> {
         match &self.backend {
             DistributedShuffleBackend::Ray => {
@@ -170,6 +202,19 @@ impl ShuffleBackend {
                     self.node_id,
                     self.schema.clone(),
                     partition_groups,
+                    node,
+                    result_tx,
+                )
+                .await
+            }
+            DistributedShuffleBackend::Celeborn(backend) => {
+                let read_spec: CelebornShuffleReadSpec = celeborn::read_spec_from_backend(backend);
+                celeborn::emit_read_tasks(
+                    self.node_id,
+                    self.schema.clone(),
+                    num_partitions,
+                    backend,
+                    read_spec,
                     node,
                     result_tx,
                 )

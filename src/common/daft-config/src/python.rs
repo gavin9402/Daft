@@ -123,6 +123,10 @@ impl PyDaftExecutionConfig {
         enable_dynamic_batching=None,
         dynamic_batching_strategy=None,
         flight_shuffle_dirs=None,
+        celeborn_master_endpoints=None,
+        celeborn_compression=None,
+        celeborn_push_data_timeout_ms=None,
+        celeborn_fetch_data_timeout_ms=None,
         enable_multi_glob_path_tasks=None,
     ))]
     fn with_config_values(
@@ -161,6 +165,10 @@ impl PyDaftExecutionConfig {
         enable_dynamic_batching: Option<bool>,
         dynamic_batching_strategy: Option<&str>,
         flight_shuffle_dirs: Option<Vec<String>>,
+        celeborn_master_endpoints: Option<String>,
+        celeborn_compression: Option<String>,
+        celeborn_push_data_timeout_ms: Option<u64>,
+        celeborn_fetch_data_timeout_ms: Option<u64>,
         enable_multi_glob_path_tasks: Option<bool>,
     ) -> PyResult<Self> {
         let mut config = self.config.as_ref().clone();
@@ -243,10 +251,10 @@ impl PyDaftExecutionConfig {
         if let Some(shuffle_algorithm) = shuffle_algorithm {
             if !matches!(
                 shuffle_algorithm,
-                "map_reduce" | "pre_shuffle_merge" | "flight_shuffle" | "auto"
+                "map_reduce" | "pre_shuffle_merge" | "flight_shuffle" | "celeborn" | "auto"
             ) {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    "shuffle_algorithm must be 'auto', 'map_reduce', 'pre_shuffle_merge', or 'flight_shuffle'",
+                    "shuffle_algorithm must be 'auto', 'map_reduce', 'pre_shuffle_merge', 'flight_shuffle', or 'celeborn'",
                 ));
             }
             config.shuffle_algorithm = shuffle_algorithm.to_string();
@@ -302,6 +310,32 @@ impl PyDaftExecutionConfig {
                 ));
             }
             config.flight_shuffle_dirs = flight_shuffle_dirs;
+        }
+
+        if let Some(celeborn_master_endpoints) = celeborn_master_endpoints {
+            if celeborn_master_endpoints.trim().is_empty() {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "celeborn_master_endpoints must not be empty",
+                ));
+            }
+            config.celeborn_master_endpoints = Some(celeborn_master_endpoints);
+        }
+
+        if let Some(celeborn_compression) = celeborn_compression {
+            if !matches!(celeborn_compression.as_str(), "lz4" | "zstd" | "none") {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "celeborn_compression must be 'lz4', 'zstd', or 'none'",
+                ));
+            }
+            config.celeborn_compression = celeborn_compression;
+        }
+
+        if let Some(celeborn_push_data_timeout_ms) = celeborn_push_data_timeout_ms {
+            config.celeborn_push_data_timeout_ms = celeborn_push_data_timeout_ms;
+        }
+
+        if let Some(celeborn_fetch_data_timeout_ms) = celeborn_fetch_data_timeout_ms {
+            config.celeborn_fetch_data_timeout_ms = celeborn_fetch_data_timeout_ms;
         }
 
         if let Some(enable_multi_glob_path_tasks) = enable_multi_glob_path_tasks {

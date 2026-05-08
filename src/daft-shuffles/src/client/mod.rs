@@ -1,3 +1,4 @@
+pub mod celeborn;
 pub mod flight_client;
 
 use std::{collections::HashMap, sync::Arc};
