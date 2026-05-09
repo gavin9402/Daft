@@ -7,6 +7,8 @@
 mod client;
 #[cfg(feature = "celeborn")]
 mod ffi;
+#[cfg(all(feature = "celeborn", test))]
+mod integration_tests;
 mod mock;
 
 pub use client::{CelebornClient, CelebornClientConfig, PartitionDataStream};
