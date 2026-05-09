@@ -35,12 +35,12 @@ struct MockState {
 }
 
 /// Process-local in-memory Celeborn client used for development and testing.
-pub struct MockCelebornClient {
+pub struct MockShuffleCelebornClient {
     config: CelebornClientConfig,
     state: Arc<Mutex<MockState>>,
 }
 
-impl MockCelebornClient {
+impl MockShuffleCelebornClient {
     pub fn new(config: CelebornClientConfig) -> Self {
         Self {
             config,
@@ -81,7 +81,7 @@ impl MockCelebornClient {
 }
 
 #[async_trait]
-impl CelebornClient for MockCelebornClient {
+impl CelebornClient for MockShuffleCelebornClient {
     async fn push_data(
         &self,
         shuffle_id: u64,
@@ -154,8 +154,8 @@ mod tests {
 
     use super::*;
 
-    fn new_client() -> MockCelebornClient {
-        MockCelebornClient::new(CelebornClientConfig {
+    fn new_client() -> MockShuffleCelebornClient {
+        MockShuffleCelebornClient::new(CelebornClientConfig {
             master_endpoints: "mock://".to_string(),
             app_id: "test_app".to_string(),
             ..Default::default()
@@ -304,7 +304,7 @@ mod tests {
 
     /// End-to-end data path test: construct a real `MicroPartition`, serialize
     /// it to Arrow IPC bytes (exactly as `RepartitionSink::sink` does), push
-    /// the bytes through `MockCelebornClient`, read them back via
+    /// the bytes through `MockShuffleCelebornClient`, read them back via
     /// `read_partition`, deserialize back to `MicroPartition`, and assert that
     /// the data content is identical.
     ///
@@ -314,7 +314,7 @@ mod tests {
     /// ```text
     ///   MicroPartition
     ///     → write_to_ipc_stream() → Vec<u8>
-    ///       → push_data(bytes) → [MockCelebornClient stores]
+    ///       → push_data(bytes) → [MockShuffleCelebornClient stores]
     ///         → read_partition() → Stream<Bytes>
     ///           → read_from_ipc_stream(bytes) → MicroPartition
     /// ```

@@ -6,10 +6,10 @@
 //!
 //! * Daft side development can proceed independently of the upstream Celeborn
 //!   client SDK availability.
-//! * The mock implementation ([`MockCelebornClient`]) allows compilation, unit
+//! * The mock implementation ([`MockShuffleCelebornClient`]) allows compilation, unit
 //!   testing, and end-to-end shuffle testing without a running Celeborn cluster.
 //! * When the real Celeborn Rust/FFI client SDK becomes available, only a single
-//!   `impl CelebornClient for RealCelebornClient` block needs to be added; no
+//!   `impl CelebornClient for ShuffleCelebornClient` block needs to be added; no
 //!   upstream code change is required.
 
 use async_trait::async_trait;
