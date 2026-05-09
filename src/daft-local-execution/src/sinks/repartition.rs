@@ -18,9 +18,11 @@ use daft_shuffles::{
 use itertools::Itertools;
 use tracing::{Span, instrument};
 
-use super::blocking_sink::{
-    BlockingSink, BlockingSinkFinalizeResult, BlockingSinkOutput, BlockingSinkSinkResult,
-    ShuffleMetadata, ShufflePartitionMetadata,
+use super::{
+    blocking_sink::{
+        BlockingSink, BlockingSinkFinalizeResult, BlockingSinkOutput, BlockingSinkSinkResult,
+    },
+    shuffle_metadata::ShufflePartitionMeta,
 };
 use crate::{
     ExecutionTaskSpawner,
@@ -485,15 +487,15 @@ impl BlockingSink for RepartitionSink {
                                 }
                             }
 
-                            Ok(BlockingSinkOutput::ShuffleMetadata(ShuffleMetadata {
-                                partitions: rows_per_partition
+                            Ok(BlockingSinkOutput::ShufflePartitionMetas(
+                                rows_per_partition
                                     .into_iter()
                                     .zip(bytes_per_partition)
                                     .map(|(num_rows, size_bytes)| {
-                                        ShufflePartitionMetadata::new(num_rows, size_bytes)
+                                        ShufflePartitionMeta::new(num_rows, size_bytes)
                                     })
                                     .collect(),
-                            }))
+                            ))
                         },
                         Span::current(),
                     )

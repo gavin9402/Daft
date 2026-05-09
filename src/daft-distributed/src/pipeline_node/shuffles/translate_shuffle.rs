@@ -61,39 +61,7 @@ impl LogicalPlanToPipelineNodeTranslator {
         schema: SchemaRef,
         child: DistributedPipelineNode,
     ) -> DaftResult<DistributedPipelineNode> {
-        let backend = match self.plan_config.config.shuffle_algorithm.as_str() {
-            "flight_shuffle" => DistributedShuffleBackend::Flight(FlightShuffleBackendConfig {
-                shuffle_id: 0,
-                shuffle_dirs: self.plan_config.config.flight_shuffle_dirs.clone(),
-                compression: None,
-            }),
-            "celeborn" => {
-                // `master_endpoints` is the only Celeborn-specific value that
-                // must be set explicitly by the user; the remaining knobs
-                // (compression, timeouts) have application-wide defaults that
-                // we read straight from the global execution config.
-                let master_endpoints = self
-                    .plan_config
-                    .config
-                    .celeborn_master_endpoints
-                    .clone()
-                    .expect(
-                        "celeborn_master_endpoints must be configured when shuffle_algorithm == \"celeborn\"",
-                    );
-                DistributedShuffleBackend::Celeborn(CelebornShuffleBackendConfig {
-                    // Real shuffle id is assigned later inside `ShuffleBackend::new`
-                    // via `make_shuffle_id(context)`; the value here is a
-                    // placeholder that will be overwritten.
-                    shuffle_id: 0,
-                    master_endpoints,
-                    app_id: self.plan_config.query_id.to_string(),
-                    compression: self.plan_config.config.celeborn_compression.clone(),
-                    push_data_timeout_ms: self.plan_config.config.celeborn_push_data_timeout_ms,
-                    fetch_data_timeout_ms: self.plan_config.config.celeborn_fetch_data_timeout_ms,
-                })
-            }
-            _ => DistributedShuffleBackend::Ray,
-        };
+        let backend = self.select_backend();
         self.gen_repartition_node_with_backend(repartition_spec, schema, child, backend)
     }
 
