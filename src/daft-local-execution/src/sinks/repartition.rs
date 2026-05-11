@@ -122,9 +122,6 @@ enum RepartitionBackend {
         shuffle_id: u64,
         repartition_spec: RepartitionSpec,
         client: Arc<dyn CelebornClient>,
-        /// Total number of mappers participating in this shuffle. Required by
-        /// Celeborn so that reducers know when all map tasks have completed.
-        num_mappers: u32,
     },
 }
 
@@ -188,7 +185,6 @@ impl RepartitionSink {
         shuffle_id: u64,
         repartition_spec: RepartitionSpec,
         client: Arc<dyn CelebornClient>,
-        num_mappers: u32,
     ) -> Self {
         Self {
             backend: RepartitionBackend::Celeborn {
@@ -196,7 +192,6 @@ impl RepartitionSink {
                 shuffle_id,
                 repartition_spec: repartition_spec.clone(),
                 client,
-                num_mappers,
             },
             repartition_spec,
             num_partitions,
@@ -442,8 +437,7 @@ impl BlockingSink for RepartitionSink {
                     )
                     .into()
             }
-            RepartitionBackend::Celeborn { num_mappers, .. } => {
-                let num_mappers = *num_mappers;
+            RepartitionBackend::Celeborn { .. } => {
                 let num_partitions = self.num_partitions;
                 let states = states
                     .into_iter()
@@ -468,12 +462,7 @@ impl BlockingSink for RepartitionSink {
                             for state in &states {
                                 if let Err(e) = state
                                     .client
-                                    .mapper_end(
-                                        state.shuffle_id,
-                                        state.map_id,
-                                        state.attempt_id,
-                                        num_mappers,
-                                    )
+                                    .mapper_end(state.shuffle_id, state.map_id, state.attempt_id)
                                     .await
                                 {
                                     tracing::error!(
@@ -606,9 +595,9 @@ impl BlockingSink for RepartitionSink {
                     client: client.clone(),
                     shuffle_id: *shuffle_id,
                     map_id: input_id,
-                    attempt_id: 0,
-                    rows_per_partition: vec![0usize; *num_partitions],
-                    bytes_per_partition: vec![0usize; *num_partitions],
+                    attempt_id: input_id,
+                    rows_per_partition: vec![0; *num_partitions],
+                    bytes_per_partition: vec![0; *num_partitions],
                 }))
             }
         }

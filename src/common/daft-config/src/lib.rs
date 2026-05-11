@@ -106,6 +106,27 @@ impl DaftPlanningConfig {
     }
 }
 
+/// Configuration for the Celeborn shuffle backend.
+///
+/// When present in [`DaftExecutionConfig`], indicates that the Celeborn
+/// shuffle backend is available and provides the connection parameters
+/// needed to reach the LifecycleManager.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CelebornConfig {
+    /// LifecycleManager hostname or IP address.
+    pub lm_host: String,
+    /// LifecycleManager port.
+    pub lm_port: i32,
+    /// Application-level identifier for this Celeborn session.
+    pub app_id: String,
+    /// Compression codec for shuffle blocks (`"lz4"`, `"zstd"`, or `"none"`).
+    pub compression: String,
+    /// Timeout in milliseconds for push_data RPCs.
+    pub push_data_timeout_ms: u64,
+    /// Timeout in milliseconds for fetch_data RPCs.
+    pub fetch_data_timeout_ms: u64,
+}
+
 /// Configurations for Daft to use during the execution of a Dataframe
 ///  Note that this should be immutable for a given end-to-end execution of a logical plan.
 ///
@@ -152,10 +173,7 @@ pub struct DaftExecutionConfig {
     pub enable_dynamic_batching: bool,
     pub dynamic_batching_strategy: String,
     pub flight_shuffle_dirs: Vec<String>,
-    pub celeborn_master_endpoints: Option<String>,
-    pub celeborn_compression: String,
-    pub celeborn_push_data_timeout_ms: u64,
-    pub celeborn_fetch_data_timeout_ms: u64,
+    pub celeborn: Option<CelebornConfig>,
     pub enable_multi_glob_path_tasks: bool,
 }
 
@@ -203,10 +221,7 @@ impl Default for DaftExecutionConfig {
             enable_dynamic_batching: false,
             dynamic_batching_strategy: "auto".to_string(),
             flight_shuffle_dirs: vec!["/tmp".to_string()],
-            celeborn_master_endpoints: None,
-            celeborn_compression: "lz4".to_string(),
-            celeborn_push_data_timeout_ms: 120_000,
-            celeborn_fetch_data_timeout_ms: 120_000,
+            celeborn: None,
             enable_multi_glob_path_tasks: false,
         }
     }

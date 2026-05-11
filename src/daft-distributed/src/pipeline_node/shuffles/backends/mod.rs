@@ -62,7 +62,8 @@ impl ShuffleBackend {
                 DistributedShuffleBackend::Celeborn(backend) => {
                     DistributedShuffleBackend::Celeborn(CelebornShuffleBackendConfig {
                         shuffle_id: make_shuffle_id(context),
-                        master_endpoints: backend.master_endpoints,
+                        lm_host: backend.lm_host,
+                        lm_port: backend.lm_port,
                         app_id: backend.app_id,
                         compression: backend.compression,
                         push_data_timeout_ms: backend.push_data_timeout_ms,
@@ -110,15 +111,6 @@ impl ShuffleBackend {
             },
             DistributedShuffleBackend::Celeborn(cfg) => LocalShuffleBackend::Celeborn {
                 shuffle_id: cfg.shuffle_id,
-                master_endpoints: cfg.master_endpoints,
-                app_id: cfg.app_id,
-                compression: cfg.compression,
-                // `num_mappers` is populated later by the execution loop once
-                // all map tasks have been materialized and counted. At this
-                // point we use 0 as a placeholder; the real value is injected
-                // before the local plan is sent to workers.
-                num_mappers: 0,
-                push_data_timeout_ms: cfg.push_data_timeout_ms,
             },
         }
     }

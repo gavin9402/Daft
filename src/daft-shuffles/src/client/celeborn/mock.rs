@@ -18,7 +18,7 @@ use bytes::Bytes;
 use common_error::DaftResult;
 use futures::stream;
 
-use crate::client::celeborn::client::{CelebornClient, CelebornClientConfig, PartitionDataStream};
+use crate::client::celeborn::client::{CelebornClient, PartitionDataStream};
 
 /// Key identifying a single reduce partition within a shuffle.
 type PartitionKey = (u64, u32);
@@ -32,24 +32,29 @@ struct MockState {
     mapper_ends: HashMap<(u64, u32, u32), u32>,
     /// Shuffles that have been unregistered.
     unregistered: HashSet<u64>,
+    /// Per-shuffle metadata registered via `register_shuffle`.
+    shuffle_meta: HashMap<u64, (u32, u32)>, // shuffle_id -> (num_mappers, num_partitions)
 }
 
 /// Process-local in-memory Celeborn client used for development and testing.
+///
+/// This is a **connection-level** mock: one instance can serve multiple
+/// shuffles, just like the real [`ShuffleCelebornClient`](super::ffi::ShuffleCelebornClient).
 pub struct MockShuffleCelebornClient {
-    config: CelebornClientConfig,
     state: Arc<Mutex<MockState>>,
 }
 
+impl Default for MockShuffleCelebornClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockShuffleCelebornClient {
-    pub fn new(config: CelebornClientConfig) -> Self {
+    pub fn new() -> Self {
         Self {
-            config,
             state: Arc::new(Mutex::new(MockState::default())),
         }
-    }
-
-    pub fn config(&self) -> &CelebornClientConfig {
-        &self.config
     }
 
     /// Inspect how many `mapper_end` calls were made for the given map attempt.
@@ -82,6 +87,19 @@ impl MockShuffleCelebornClient {
 
 #[async_trait]
 impl CelebornClient for MockShuffleCelebornClient {
+    async fn register_shuffle(
+        &self,
+        shuffle_id: u64,
+        num_mappers: u32,
+        num_partitions: u32,
+    ) -> DaftResult<()> {
+        let mut state = self.state.lock().expect("mock state poisoned");
+        state
+            .shuffle_meta
+            .insert(shuffle_id, (num_mappers, num_partitions));
+        Ok(())
+    }
+
     async fn push_data(
         &self,
         shuffle_id: u64,
@@ -103,13 +121,7 @@ impl CelebornClient for MockShuffleCelebornClient {
         Ok(())
     }
 
-    async fn mapper_end(
-        &self,
-        shuffle_id: u64,
-        map_id: u32,
-        attempt_id: u32,
-        _num_mappers: u32,
-    ) -> DaftResult<()> {
+    async fn mapper_end(&self, shuffle_id: u64, map_id: u32, attempt_id: u32) -> DaftResult<()> {
         let mut state = self.state.lock().expect("mock state poisoned");
         *state
             .mapper_ends
@@ -157,16 +169,13 @@ mod tests {
     use super::*;
 
     fn new_client() -> MockShuffleCelebornClient {
-        MockShuffleCelebornClient::new(CelebornClientConfig {
-            master_endpoints: "mock://".to_string(),
-            app_id: "test_app".to_string(),
-            ..Default::default()
-        })
+        MockShuffleCelebornClient::new()
     }
 
     #[tokio::test]
     async fn push_then_read_returns_data_in_order() -> DaftResult<()> {
         let client = new_client();
+        client.register_shuffle(1, 2, 8).await?;
         client.push_data(1, 0, 0, 7, b"hello").await?;
         client.push_data(1, 1, 0, 7, b"world").await?;
 
@@ -184,7 +193,8 @@ mod tests {
     #[tokio::test]
     async fn mapper_end_is_recorded() -> DaftResult<()> {
         let client = new_client();
-        client.mapper_end(42, 3, 0, 10).await?;
+        client.register_shuffle(42, 10, 1).await?;
+        client.mapper_end(42, 3, 0).await?;
         assert_eq!(client.mapper_end_count(42, 3, 0), 1);
         assert_eq!(client.mapper_end_count(42, 3, 1), 0);
         Ok(())
@@ -193,6 +203,7 @@ mod tests {
     #[tokio::test]
     async fn unregister_drops_data_and_marks_flag() -> DaftResult<()> {
         let client = new_client();
+        client.register_shuffle(9, 1, 1).await?;
         client.push_data(9, 0, 0, 0, b"x").await?;
         assert_eq!(client.pushed_block_count(9, 0), 1);
 
@@ -205,6 +216,7 @@ mod tests {
     #[tokio::test]
     async fn read_unknown_partition_returns_empty_stream() -> DaftResult<()> {
         let client = new_client();
+        client.register_shuffle(123, 1, 457).await?;
         let mut stream = client.read_partition(123, 456).await?;
         assert!(stream.next().await.is_none());
         Ok(())
@@ -219,6 +231,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_mappers_pushed_to_same_partition_are_concatenated() -> DaftResult<()> {
         let client = new_client();
+        client.register_shuffle(1, 3, 6).await?;
 
         client
             .push_data(1, /* map_id */ 0, 0, 5, b"from_mapper_0")
@@ -230,9 +243,9 @@ mod tests {
             .push_data(1, /* map_id */ 2, 0, 5, b"from_mapper_2")
             .await?;
 
-        client.mapper_end(1, 0, 0, 3).await?;
-        client.mapper_end(1, 1, 0, 3).await?;
-        client.mapper_end(1, 2, 0, 3).await?;
+        client.mapper_end(1, 0, 0).await?;
+        client.mapper_end(1, 1, 0).await?;
+        client.mapper_end(1, 2, 0).await?;
 
         // All three mappers must have recorded exactly one mapper_end call.
         for map_id in 0..3 {
@@ -262,6 +275,9 @@ mod tests {
     async fn shuffles_are_isolated_by_shuffle_id() -> DaftResult<()> {
         let client = new_client();
 
+        client.register_shuffle(10, 1, 1).await?;
+        client.register_shuffle(20, 1, 1).await?;
+
         client.push_data(10, 0, 0, 0, b"shuffle_10_data").await?;
         client.push_data(20, 0, 0, 0, b"shuffle_20_data").await?;
 
@@ -289,6 +305,7 @@ mod tests {
     #[tokio::test]
     async fn unregister_is_idempotent() -> DaftResult<()> {
         let client = new_client();
+        client.register_shuffle(7, 1, 1).await?;
         client.push_data(7, 0, 0, 0, b"data").await?;
 
         client.unregister_shuffle(7).await?;
@@ -341,6 +358,7 @@ mod tests {
         // Push through the mock client.
         let shuffle_id = 100;
         let partition_id = 7;
+        client.register_shuffle(100, 1, 8).await?;
         client
             .push_data(shuffle_id, 0, 0, partition_id, &ipc_bytes)
             .await?;
@@ -378,6 +396,8 @@ mod tests {
         let client = new_client();
         let shuffle_id = 200;
         let partition_id = 0;
+
+        client.register_shuffle(shuffle_id, 2, 1).await?;
 
         // Mapper 0 pushes 2 rows.
         let batch_m0 = RecordBatch::from_nonempty_columns(vec![

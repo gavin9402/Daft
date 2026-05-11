@@ -24,33 +24,31 @@ use futures::stream::BoxStream;
 /// to the same reduce partition.
 pub type PartitionDataStream = BoxStream<'static, DaftResult<Bytes>>;
 
-/// Per-application configuration used to construct a [`CelebornClient`].
+/// Connection-level configuration used to construct a [`CelebornClient`].
 ///
-/// Mirrors the subset of `CelebornConf` from the Java SDK that is meaningful
-/// to a writer/reader process. Additional options can be added without
-/// breaking the trait.
+/// Contains all the parameters needed to establish a connection to the
+/// Celeborn LifecycleManager. Per-shuffle metadata such as `num_mappers` and
+/// `num_partitions` are registered via [`CelebornClient::register_shuffle`]
+/// instead, allowing a single client instance to serve multiple shuffles.
 #[derive(Clone, Debug)]
 pub struct CelebornClientConfig {
-    /// Comma-separated Celeborn master endpoints, e.g. `"host1:9097,host2:9097"`.
-    pub master_endpoints: String,
+    /// LifecycleManager hostname or IP address.
+    pub lm_host: String,
+    /// LifecycleManager port.
+    pub lm_port: i32,
     /// Application-level identifier; usually the Daft query/session id.
     pub app_id: String,
     /// Compression codec for shuffle blocks. One of `"lz4" | "zstd" | "none"`.
     pub compression: String,
-    /// Push data RPC timeout in milliseconds.
-    pub push_data_timeout_ms: u64,
-    /// Fetch data RPC timeout in milliseconds.
-    pub fetch_data_timeout_ms: u64,
 }
 
 impl Default for CelebornClientConfig {
     fn default() -> Self {
         Self {
-            master_endpoints: String::new(),
+            lm_host: String::new(),
+            lm_port: 0,
             app_id: String::new(),
             compression: "lz4".to_string(),
-            push_data_timeout_ms: 120_000,
-            fetch_data_timeout_ms: 120_000,
         }
     }
 }
@@ -66,6 +64,18 @@ impl Default for CelebornClientConfig {
 /// shuffle share one client instance).
 #[async_trait]
 pub trait CelebornClient: Send + Sync {
+    /// Register a shuffle with the Celeborn cluster.
+    ///
+    /// Must be called once per shuffle before any `push_data` or `mapper_end`
+    /// calls. The client stores `num_mappers` and `num_partitions` internally
+    /// so that subsequent per-record calls do not need to repeat them.
+    async fn register_shuffle(
+        &self,
+        shuffle_id: u64,
+        num_mappers: u32,
+        num_partitions: u32,
+    ) -> DaftResult<()>;
+
     /// Push a single partition payload to the Celeborn cluster.
     ///
     /// * `shuffle_id` - Logical shuffle identifier shared by all mappers/reducers
@@ -86,16 +96,7 @@ pub trait CelebornClient: Send + Sync {
 
     /// Notify the Celeborn cluster that this map task has finished pushing all
     /// partitions. Must be called exactly once per map attempt.
-    ///
-    /// * `num_mappers` - Total number of map tasks in this shuffle. Required by
-    ///   Celeborn so that reducers know when all data has arrived.
-    async fn mapper_end(
-        &self,
-        shuffle_id: u64,
-        map_id: u32,
-        attempt_id: u32,
-        num_mappers: u32,
-    ) -> DaftResult<()>;
+    async fn mapper_end(&self, shuffle_id: u64, map_id: u32, attempt_id: u32) -> DaftResult<()>;
 
     /// Read all blocks for a single reduce partition from the Celeborn cluster.
     /// Returns a stream of byte chunks (each chunk is one or more Arrow IPC

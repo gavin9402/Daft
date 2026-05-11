@@ -83,11 +83,13 @@ def celeborn_shuffle_ctx():
     """
 
     @contextmanager
-    def _ctx(master_endpoints: str = "mock://localhost:9097"):
+    def _ctx(lm_host: str = "localhost", lm_port: int = 9097):
         with tempfile.TemporaryDirectory() as _tmp_dir:
             with daft.execution_config_ctx(
                 shuffle_algorithm="celeborn",
-                celeborn_master_endpoints=master_endpoints,
+                celeborn_lm_host=lm_host,
+                celeborn_lm_port=lm_port,
+                celeborn_app_id="test-app",
                 celeborn_compression="lz4",
                 celeborn_push_data_timeout_ms=30_000,
                 celeborn_fetch_data_timeout_ms=30_000,
@@ -113,22 +115,23 @@ def test_celeborn_shuffle_algorithm_is_accepted():
     """
     with daft.execution_config_ctx(
         shuffle_algorithm="celeborn",
-        celeborn_master_endpoints="host:9097",
+        celeborn_lm_host="host",
+        celeborn_lm_port=9097,
     ):
         # Reaching here without ValueError is the assertion.
         pass
 
 
-def test_celeborn_master_endpoints_must_not_be_empty():
-    """An empty celeborn_master_endpoints is a configuration mistake.
+def test_celeborn_lm_host_must_not_be_empty():
+    """An empty celeborn_lm_host is a configuration mistake.
 
     The validator in daft-config/src/python.rs must surface it as ValueError so
     users get a clear failure at config time instead of a runtime crash.
     """
-    with pytest.raises(ValueError, match="celeborn_master_endpoints"):
+    with pytest.raises(ValueError, match="celeborn_lm_host"):
         with daft.execution_config_ctx(
             shuffle_algorithm="celeborn",
-            celeborn_master_endpoints="   ",
+            celeborn_lm_host="   ",
         ):
             pass
 
@@ -139,7 +142,8 @@ def test_celeborn_compression_whitelist():
     for codec in ("lz4", "zstd", "none"):
         with daft.execution_config_ctx(
             shuffle_algorithm="celeborn",
-            celeborn_master_endpoints="host:9097",
+            celeborn_lm_host="host",
+            celeborn_lm_port=9097,
             celeborn_compression=codec,
         ):
             pass
@@ -148,7 +152,8 @@ def test_celeborn_compression_whitelist():
     with pytest.raises(ValueError, match="celeborn_compression"):
         with daft.execution_config_ctx(
             shuffle_algorithm="celeborn",
-            celeborn_master_endpoints="host:9097",
+            celeborn_lm_host="host",
+            celeborn_lm_port=9097,
             celeborn_compression="snappy",
         ):
             pass
@@ -166,7 +171,8 @@ def test_celeborn_timeouts_are_accepted():
     """
     with daft.execution_config_ctx(
         shuffle_algorithm="celeborn",
-        celeborn_master_endpoints="host:9097",
+        celeborn_lm_host="host",
+        celeborn_lm_port=9097,
         celeborn_push_data_timeout_ms=12_345,
         celeborn_fetch_data_timeout_ms=67_890,
     ):

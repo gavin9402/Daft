@@ -32,32 +32,33 @@ use super::{
 
 /// Helper: read Celeborn connection info from environment variables,
 /// falling back to the default dev cluster.
-fn celeborn_test_config() -> (CelebornClientConfig, String, i32) {
-    let host = std::env::var("CELEBORN_LM_HOST").unwrap_or_else(|_| "30.150.24.146".to_string());
-    let port: i32 = std::env::var("CELEBORN_LM_PORT")
+fn celeborn_test_config() -> CelebornClientConfig {
+    let lm_host = std::env::var("CELEBORN_LM_HOST").unwrap_or_else(|_| "30.150.24.146".to_string());
+    let lm_port: i32 = std::env::var("CELEBORN_LM_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(32393);
     let app_id = std::env::var("CELEBORN_APP_ID").unwrap_or_else(|_| "my-rust-app-001".to_string());
 
-    let config = CelebornClientConfig {
-        master_endpoints: format!("{host}:{port}"),
+    CelebornClientConfig {
+        lm_host,
+        lm_port,
         app_id,
         compression: "NONE".to_string(),
-        push_data_timeout_ms: 30_000,
-        fetch_data_timeout_ms: 30_000,
-    };
-    (config, host, port)
+    }
 }
 
 /// Verify basic connectivity: connect to the real Celeborn LifecycleManager.
 #[tokio::test]
 #[ignore = "requires a running Celeborn cluster"]
 async fn connect_to_real_celeborn() {
-    let (config, host, port) = celeborn_test_config();
-    println!("connecting to Celeborn LM at {host}:{port} ...");
+    let config = celeborn_test_config();
+    println!(
+        "connecting to Celeborn LM at {}:{} ...",
+        config.lm_host, config.lm_port
+    );
 
-    let client = ShuffleCelebornClient::connect(&config, &host, port, 1, 1)
+    let client = ShuffleCelebornClient::connect(&config)
         .expect("failed to connect to Celeborn LifecycleManager");
 
     println!("connected successfully, client created.");
@@ -68,14 +69,18 @@ async fn connect_to_real_celeborn() {
 #[tokio::test]
 #[ignore = "requires a running Celeborn cluster"]
 async fn push_read_raw_bytes_roundtrip() {
-    let (config, host, port) = celeborn_test_config();
+    let config = celeborn_test_config();
 
     let num_mappers = 2;
     let num_partitions = 3;
     let shuffle_id: u64 = 1001;
 
-    let client = ShuffleCelebornClient::connect(&config, &host, port, num_mappers, num_partitions)
-        .expect("failed to connect");
+    let client = ShuffleCelebornClient::connect(&config).expect("failed to connect");
+
+    client
+        .register_shuffle(shuffle_id, num_mappers, num_partitions)
+        .await
+        .expect("register_shuffle failed");
 
     // Mapper 0 pushes to partition 0.
     let payload_m0 = b"hello from mapper 0";
@@ -95,11 +100,11 @@ async fn push_read_raw_bytes_roundtrip() {
 
     // Both mappers signal end.
     client
-        .mapper_end(shuffle_id, 0, 0, num_mappers as u32)
+        .mapper_end(shuffle_id, 0, 0)
         .await
         .expect("mapper_end(0) failed");
     client
-        .mapper_end(shuffle_id, 1, 0, num_mappers as u32)
+        .mapper_end(shuffle_id, 1, 0)
         .await
         .expect("mapper_end(1) failed");
     println!("both mappers ended");
@@ -144,15 +149,19 @@ async fn push_read_raw_bytes_roundtrip() {
 #[tokio::test]
 #[ignore = "requires a running Celeborn cluster"]
 async fn arrow_ipc_roundtrip_real_celeborn() {
-    let (config, host, port) = celeborn_test_config();
+    let config = celeborn_test_config();
 
     let num_mappers = 2;
     let num_partitions = 4;
     let shuffle_id: u64 = 2001;
     let target_partition: u32 = 2;
 
-    let client = ShuffleCelebornClient::connect(&config, &host, port, num_mappers, num_partitions)
-        .expect("failed to connect");
+    let client = ShuffleCelebornClient::connect(&config).expect("failed to connect");
+
+    client
+        .register_shuffle(shuffle_id, num_mappers, num_partitions)
+        .await
+        .expect("register_shuffle failed");
 
     // --- Mapper 0: 3 rows ---
     let string_values_m0 = vec!["alpha", "beta", "gamma"];
@@ -206,11 +215,11 @@ async fn arrow_ipc_roundtrip_real_celeborn() {
 
     // --- mapper_end for both ---
     client
-        .mapper_end(shuffle_id, 0, 0, num_mappers as u32)
+        .mapper_end(shuffle_id, 0, 0)
         .await
         .expect("mapper_end(0) failed");
     client
-        .mapper_end(shuffle_id, 1, 0, num_mappers as u32)
+        .mapper_end(shuffle_id, 1, 0)
         .await
         .expect("mapper_end(1) failed");
     println!("both mappers ended");

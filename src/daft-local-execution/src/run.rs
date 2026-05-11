@@ -37,6 +37,7 @@ use {
     daft_partition_refs::PyFlightPartitionRef,
     pyo3::{
         Bound, IntoPyObject, PyAny, PyRef, PyResult, Python, pyclass, pymethods, sync::MutexExt,
+        types::PyAnyMethods,
     },
 };
 
@@ -201,6 +202,45 @@ impl PyNativeExecutor {
 
     pub fn shuffle_address(&self) -> Option<String> {
         self.address.clone()
+    }
+
+    /// Connect to a Celeborn LifecycleManager and set the resulting client
+    /// on this executor. Must be called before any shuffle task that uses
+    /// the Celeborn backend.
+    ///
+    /// # Arguments
+    /// * `config` - A Python dict with keys: `lm_host` (str), `lm_port` (int),
+    ///   and optionally `app_id` (str, default `""`), `compression` (str,
+    ///   default `"lz4"`).
+    pub fn set_celeborn_client(&self, py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<()> {
+        let lm_host: String = config.get_item("lm_host")?.extract::<String>()?;
+        let lm_port: i32 = config.get_item("lm_port")?.extract::<i32>()?;
+        let app_id: String = config
+            .get_item("app_id")
+            .and_then(|v| v.extract::<String>())
+            .unwrap_or_default();
+        let compression: String = config
+            .get_item("compression")
+            .and_then(|v| v.extract::<String>())
+            .unwrap_or_else(|_| "lz4".to_string());
+
+        let celeborn_config = daft_shuffles::client::celeborn::CelebornClientConfig {
+            lm_host: lm_host.clone(),
+            lm_port,
+            app_id,
+            compression,
+        };
+        let client = daft_shuffles::client::celeborn::connect_celeborn_client(&celeborn_config)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Failed to connect to Celeborn LifecycleManager at {lm_host}:{lm_port}: {e}"
+                ))
+            })?;
+        self.executor
+            .lock_py_attached(py)
+            .unwrap()
+            .set_celeborn_client(client);
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -396,6 +436,10 @@ pub struct NativeExecutor {
     is_flotilla_worker: bool,
     shuffle_server: Option<Arc<ShuffleFlightServer>>,
     shuffle_server_connection: Option<FlightServerConnectionHandle>,
+    /// Global Celeborn shuffle client, shared across all queries/shuffles on
+    /// this worker. Created once via [`Self::set_celeborn_client`] and injected
+    /// into every [`BuilderContext`] so that pipeline nodes can use it.
+    celeborn_client: Option<Arc<dyn daft_shuffles::client::celeborn::CelebornClient>>,
     plans: HashMap<u64, PlanState>,
 }
 
@@ -411,6 +455,7 @@ impl NativeExecutor {
                 is_flotilla_worker: true,
                 shuffle_server: Some(shuffle_server),
                 shuffle_server_connection,
+                celeborn_client: None,
                 plans: HashMap::new(),
             }
         } else {
@@ -419,9 +464,21 @@ impl NativeExecutor {
                 is_flotilla_worker: false,
                 shuffle_server: None,
                 shuffle_server_connection: None,
+                celeborn_client: None,
                 plans: HashMap::new(),
             }
         }
+    }
+
+    /// Set the global Celeborn shuffle client for this executor.
+    ///
+    /// Must be called before any shuffle task that uses the Celeborn backend.
+    /// The client is injected into every `BuilderContext` created by `run()`.
+    pub fn set_celeborn_client(
+        &mut self,
+        client: Arc<dyn daft_shuffles::client::celeborn::CelebornClient>,
+    ) {
+        self.celeborn_client = Some(client);
     }
 
     pub fn shuffle_address(&self) -> Option<String> {
@@ -484,6 +541,9 @@ impl NativeExecutor {
                     .as_ref()
                     .map(|server| (server.clone(), shuffle_address.unwrap())),
             );
+            if let Some(celeborn_client) = &self.celeborn_client {
+                ctx.set_celeborn_client(celeborn_client.clone());
+            }
             let (pipeline, input_senders) =
                 translate_physical_plan_to_pipeline(local_physical_plan, &exec_cfg, &ctx)?;
 

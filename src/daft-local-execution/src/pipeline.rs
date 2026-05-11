@@ -277,10 +277,12 @@ pub struct BuilderContext {
             daft_dsl::expr::bound_expr::BoundExpr,
         )>,
     >,
-    /// Optional Celeborn shuffle client. Populated by the executor when the
-    /// active shuffle algorithm is "celeborn"; kept as `None` otherwise so that
-    /// pipelines using Ray/Flight shuffles incur no extra cost.
-    celeborn_client: Option<Arc<dyn daft_shuffles::client::celeborn::CelebornClient>>,
+    /// Global Celeborn shuffle client, injected by the `NativeExecutor` when
+    /// the active shuffle algorithm is "celeborn". Uses `RefCell` so it can
+    /// be set through a shared `&BuilderContext` reference (same pattern as
+    /// `checkpoint`).
+    celeborn_client:
+        std::cell::RefCell<Option<Arc<dyn daft_shuffles::client::celeborn::CelebornClient>>>,
 }
 
 impl BuilderContext {
@@ -302,7 +304,7 @@ impl BuilderContext {
             context,
             shuffle_server,
             checkpoint: std::cell::RefCell::new(None),
-            celeborn_client: None,
+            celeborn_client: std::cell::RefCell::new(None),
         }
     }
 
@@ -329,22 +331,22 @@ impl BuilderContext {
         self.checkpoint.borrow().clone()
     }
 
-    /// Inject a Celeborn client into this builder context. Must be called
-    /// before `translate_physical_plan_to_pipeline` if any plan node uses the
-    /// Celeborn shuffle backend.
-    #[allow(dead_code)]
-    pub fn with_celeborn_client(
-        mut self,
+    /// Inject the global Celeborn client into this builder context.
+    ///
+    /// Called by `NativeExecutor::run` when a Celeborn client has been
+    /// configured. Must be set before `translate_physical_plan_to_pipeline`
+    /// if any plan node uses the Celeborn shuffle backend.
+    pub fn set_celeborn_client(
+        &self,
         client: Arc<dyn daft_shuffles::client::celeborn::CelebornClient>,
-    ) -> Self {
-        self.celeborn_client = Some(client);
-        self
+    ) {
+        *self.celeborn_client.borrow_mut() = Some(client);
     }
 
     pub fn celeborn_client(
         &self,
     ) -> Option<Arc<dyn daft_shuffles::client::celeborn::CelebornClient>> {
-        self.celeborn_client.clone()
+        self.celeborn_client.borrow().clone()
     }
 
     pub fn next_id(&self) -> usize {
@@ -1688,26 +1690,15 @@ fn physical_plan_to_pipeline(
                     )
                     .boxed()
                 }
-                ShuffleBackend::Celeborn {
-                    shuffle_id,
-                    num_mappers,
-                    ..
-                } => {
-                    // The client is injected once per query via
-                    // `BuilderContext::with_celeborn_client`. We unwrap with a
-                    // descriptive panic because reaching this branch without a
-                    // client implies a configuration bug at the executor layer
-                    // (`shuffle_algorithm == "celeborn"` was selected but no
-                    // client was supplied).
+                ShuffleBackend::Celeborn { shuffle_id, .. } => {
                     let client = ctx.celeborn_client().expect(
-                        "Celeborn client must be initialized via BuilderContext::with_celeborn_client when using the celeborn shuffle algorithm",
+                        "Celeborn client must be set on BuilderContext before pipeline translation",
                     );
                     let repartition_sink = RepartitionSink::new_celeborn(
                         *num_partitions,
                         *shuffle_id,
                         repartition_spec.clone(),
                         client,
-                        *num_mappers,
                     );
                     BlockingSinkNode::new(
                         Arc::new(repartition_sink),
@@ -1803,7 +1794,7 @@ fn physical_plan_to_pipeline(
             }
             ShuffleReadBackend::Celeborn { shuffle_id, .. } => {
                 let client = ctx.celeborn_client().expect(
-                    "Celeborn client must be initialized via BuilderContext::with_celeborn_client when using the celeborn shuffle algorithm",
+                    "Celeborn client must be set on BuilderContext before pipeline translation",
                 );
                 let (tx, rx) =
                     create_unbounded_channel::<(InputId, Vec<CelebornShuffleReadInput>)>();

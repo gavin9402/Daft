@@ -5,7 +5,7 @@ use common_py_serde::impl_bincode_py_state_serialization;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{DaftEventLogConfig, DaftExecutionConfig, DaftPlanningConfig};
+use crate::{CelebornConfig, DaftEventLogConfig, DaftExecutionConfig, DaftPlanningConfig};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[pyclass(module = "daft.daft", from_py_object)]
@@ -123,7 +123,9 @@ impl PyDaftExecutionConfig {
         enable_dynamic_batching=None,
         dynamic_batching_strategy=None,
         flight_shuffle_dirs=None,
-        celeborn_master_endpoints=None,
+        celeborn_lm_host=None,
+        celeborn_lm_port=None,
+        celeborn_app_id=None,
         celeborn_compression=None,
         celeborn_push_data_timeout_ms=None,
         celeborn_fetch_data_timeout_ms=None,
@@ -165,7 +167,9 @@ impl PyDaftExecutionConfig {
         enable_dynamic_batching: Option<bool>,
         dynamic_batching_strategy: Option<&str>,
         flight_shuffle_dirs: Option<Vec<String>>,
-        celeborn_master_endpoints: Option<String>,
+        celeborn_lm_host: Option<String>,
+        celeborn_lm_port: Option<i32>,
+        celeborn_app_id: Option<String>,
         celeborn_compression: Option<String>,
         celeborn_push_data_timeout_ms: Option<u64>,
         celeborn_fetch_data_timeout_ms: Option<u64>,
@@ -312,30 +316,55 @@ impl PyDaftExecutionConfig {
             config.flight_shuffle_dirs = flight_shuffle_dirs;
         }
 
-        if let Some(celeborn_master_endpoints) = celeborn_master_endpoints {
-            if celeborn_master_endpoints.trim().is_empty() {
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    "celeborn_master_endpoints must not be empty",
-                ));
+        // Celeborn configuration — assemble or update the CelebornConfig.
+        // If any celeborn_* parameter is provided, we either update an existing
+        // CelebornConfig or create a new one with defaults for unset fields.
+        if celeborn_lm_host.is_some()
+            || celeborn_lm_port.is_some()
+            || celeborn_app_id.is_some()
+            || celeborn_compression.is_some()
+            || celeborn_push_data_timeout_ms.is_some()
+            || celeborn_fetch_data_timeout_ms.is_some()
+        {
+            let mut celeborn = config.celeborn.take().unwrap_or_else(|| CelebornConfig {
+                lm_host: String::new(),
+                lm_port: 0,
+                app_id: String::new(),
+                compression: "lz4".to_string(),
+                push_data_timeout_ms: 120_000,
+                fetch_data_timeout_ms: 120_000,
+            });
+
+            if let Some(host) = celeborn_lm_host {
+                if host.trim().is_empty() {
+                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        "celeborn_lm_host must not be empty",
+                    ));
+                }
+                celeborn.lm_host = host;
             }
-            config.celeborn_master_endpoints = Some(celeborn_master_endpoints);
-        }
-
-        if let Some(celeborn_compression) = celeborn_compression {
-            if !matches!(celeborn_compression.as_str(), "lz4" | "zstd" | "none") {
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    "celeborn_compression must be 'lz4', 'zstd', or 'none'",
-                ));
+            if let Some(port) = celeborn_lm_port {
+                celeborn.lm_port = port;
             }
-            config.celeborn_compression = celeborn_compression;
-        }
+            if let Some(app_id) = celeborn_app_id {
+                celeborn.app_id = app_id;
+            }
+            if let Some(compression) = celeborn_compression {
+                if !matches!(compression.as_str(), "lz4" | "zstd" | "none") {
+                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        "celeborn_compression must be 'lz4', 'zstd', or 'none'",
+                    ));
+                }
+                celeborn.compression = compression;
+            }
+            if let Some(timeout) = celeborn_push_data_timeout_ms {
+                celeborn.push_data_timeout_ms = timeout;
+            }
+            if let Some(timeout) = celeborn_fetch_data_timeout_ms {
+                celeborn.fetch_data_timeout_ms = timeout;
+            }
 
-        if let Some(celeborn_push_data_timeout_ms) = celeborn_push_data_timeout_ms {
-            config.celeborn_push_data_timeout_ms = celeborn_push_data_timeout_ms;
-        }
-
-        if let Some(celeborn_fetch_data_timeout_ms) = celeborn_fetch_data_timeout_ms {
-            config.celeborn_fetch_data_timeout_ms = celeborn_fetch_data_timeout_ms;
+            config.celeborn = Some(celeborn);
         }
 
         if let Some(enable_multi_glob_path_tasks) = enable_multi_glob_path_tasks {

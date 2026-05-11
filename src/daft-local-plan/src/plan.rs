@@ -2294,11 +2294,6 @@ pub enum ShuffleBackend {
     },
     Celeborn {
         shuffle_id: u64,
-        master_endpoints: String,
-        app_id: String,
-        compression: String,
-        num_mappers: u32,
-        push_data_timeout_ms: u64,
     },
 }
 
@@ -2311,10 +2306,6 @@ pub enum ShuffleReadBackend {
     },
     Celeborn {
         shuffle_id: u64,
-        master_endpoints: String,
-        app_id: String,
-        compression: String,
-        fetch_data_timeout_ms: u64,
     },
 }
 

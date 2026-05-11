@@ -5,7 +5,10 @@
 //! to a blocking thread via `tokio::task::spawn_blocking` so they never block
 //! the async runtime.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -73,19 +76,19 @@ unsafe impl Send for CelebornShuffleClient {}
 /// we wrap it in an `Arc<Mutex<_>>`. The `Mutex` is held only for the duration
 /// of each synchronous FFI call inside `spawn_blocking`, keeping contention
 /// minimal.
+///
+/// This is a **connection-level** object: one instance per Worker, shared
+/// across all shuffles. Per-shuffle metadata (`num_mappers`, `num_partitions`)
+/// is stored internally in `shuffle_meta`.
 pub struct ShuffleCelebornClient {
     inner: Arc<Mutex<CelebornShuffleClient>>,
-    /// Number of map tasks in this shuffle (required by FFI `push_data` and `mapper_end`).
-    num_mappers: i32,
-    /// Number of reduce partitions (required by FFI `push_data`).
-    num_partitions: i32,
+    shuffle_meta: Arc<Mutex<HashMap<u64, (u32, u32)>>>,
 }
 
-// SAFETY: All fields are inherently `Send + Sync`:
-//   - `Arc<Mutex<CelebornShuffleClient>>`: `Arc` is `Send + Sync` when the
-//     inner type is `Send`, which we guarantee above via the manual `Send`
-//     impl on `CelebornShuffleClient` + the `Mutex` serialisation.
-//   - `i32` values: trivially `Send + Sync`.
+// SAFETY: The sole field is `Arc<Mutex<CelebornShuffleClient>>`.
+//   - `Arc` is `Send + Sync` when the inner type is `Send`, which we
+//     guarantee via the manual `Send` impl on `CelebornShuffleClient` + the
+//     `Mutex` serialisation.
 unsafe impl Send for ShuffleCelebornClient {}
 unsafe impl Sync for ShuffleCelebornClient {}
 
@@ -93,18 +96,9 @@ impl ShuffleCelebornClient {
     /// Connect to a running Celeborn LifecycleManager and return a new client.
     ///
     /// # Arguments
-    /// * `config` - Application-level Celeborn configuration.
-    /// * `lm_host` - LifecycleManager hostname or IP.
-    /// * `lm_port` - LifecycleManager port.
-    /// * `num_mappers` - Total number of map tasks in this shuffle.
-    /// * `num_partitions` - Total number of reduce partitions.
-    pub fn connect(
-        config: &CelebornClientConfig,
-        lm_host: &str,
-        lm_port: i32,
-        num_mappers: i32,
-        num_partitions: i32,
-    ) -> DaftResult<Self> {
+    /// * `config` - Connection-level Celeborn configuration (lm_host, lm_port,
+    ///   app_id, compression).
+    pub fn connect(config: &CelebornClientConfig) -> DaftResult<Self> {
         let codec = config.compression.to_uppercase();
         let celeborn_config = CelebornConfig {
             app_id: config.app_id.clone(),
@@ -112,25 +106,40 @@ impl ShuffleCelebornClient {
             shuffle_compression_codec: codec,
         };
 
-        let client = ShuffleClient::connect(celeborn_config, lm_host, lm_port).map_err(|e| {
-            DaftError::External(
-                format!(
-                    "Failed to connect to Celeborn LifecycleManager at {lm_host}:{lm_port}: {e}"
+        let client = ShuffleClient::connect(celeborn_config, &config.lm_host, config.lm_port)
+            .map_err(|e| {
+                DaftError::External(
+                    format!(
+                        "Failed to connect to Celeborn LifecycleManager at {}:{}: {e}",
+                        config.lm_host, config.lm_port
+                    )
+                    .into(),
                 )
-                .into(),
-            )
-        })?;
+            })?;
 
         Ok(Self {
             inner: Arc::new(Mutex::new(CelebornShuffleClient(client))),
-            num_mappers,
-            num_partitions,
+            shuffle_meta: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
 
 #[async_trait]
 impl CelebornClient for ShuffleCelebornClient {
+    async fn register_shuffle(
+        &self,
+        shuffle_id: u64,
+        num_mappers: u32,
+        num_partitions: u32,
+    ) -> DaftResult<()> {
+        let mut meta = self
+            .shuffle_meta
+            .lock()
+            .map_err(|e| DaftError::External(format!("shuffle_meta lock poisoned: {e}").into()))?;
+        meta.insert(shuffle_id, (num_mappers, num_partitions));
+        Ok(())
+    }
+
     async fn push_data(
         &self,
         shuffle_id: u64,
@@ -139,14 +148,24 @@ impl CelebornClient for ShuffleCelebornClient {
         partition_id: u32,
         data: &[u8],
     ) -> DaftResult<()> {
+        let (num_mappers_raw, num_partitions_raw) = {
+            let meta = self.shuffle_meta.lock().map_err(|e| {
+                DaftError::External(format!("shuffle_meta lock poisoned: {e}").into())
+            })?;
+            *meta.get(&shuffle_id).ok_or_else(|| {
+                DaftError::External(
+                    format!("shuffle {shuffle_id} not registered; call register_shuffle first")
+                        .into(),
+                )
+            })?
+        };
         let inner = Arc::clone(&self.inner);
         let shuffle_id = to_ffi_i32(shuffle_id, "shuffle_id")?;
         let map_id = to_ffi_i32(map_id, "map_id")?;
         let attempt_id = to_ffi_i32(attempt_id, "attempt_id")?;
         let partition_id = to_ffi_i32(partition_id, "partition_id")?;
-        let num_mappers = self.num_mappers;
-        let num_partitions = self.num_partitions;
-        // Copy data to owned buffer so it can be moved into spawn_blocking.
+        let num_mappers = to_ffi_i32(num_mappers_raw, "num_mappers")?;
+        let num_partitions = to_ffi_i32(num_partitions_raw, "num_partitions")?;
         let data_owned = data.to_vec();
 
         run_blocking("push_data", move || {
@@ -167,18 +186,23 @@ impl CelebornClient for ShuffleCelebornClient {
         .await
     }
 
-    async fn mapper_end(
-        &self,
-        shuffle_id: u64,
-        map_id: u32,
-        attempt_id: u32,
-        num_mappers: u32,
-    ) -> DaftResult<()> {
+    async fn mapper_end(&self, shuffle_id: u64, map_id: u32, attempt_id: u32) -> DaftResult<()> {
+        let (num_mappers_raw, _) = {
+            let meta = self.shuffle_meta.lock().map_err(|e| {
+                DaftError::External(format!("shuffle_meta lock poisoned: {e}").into())
+            })?;
+            *meta.get(&shuffle_id).ok_or_else(|| {
+                DaftError::External(
+                    format!("shuffle {shuffle_id} not registered; call register_shuffle first")
+                        .into(),
+                )
+            })?
+        };
         let inner = Arc::clone(&self.inner);
         let shuffle_id = to_ffi_i32(shuffle_id, "shuffle_id")?;
         let map_id = to_ffi_i32(map_id, "map_id")?;
         let attempt_id = to_ffi_i32(attempt_id, "attempt_id")?;
-        let num_mappers = to_ffi_i32(num_mappers, "num_mappers")?;
+        let num_mappers = to_ffi_i32(num_mappers_raw, "num_mappers")?;
 
         run_blocking("mapper_end", move || {
             let mut guard = lock_client(&inner)?;
@@ -195,22 +219,36 @@ impl CelebornClient for ShuffleCelebornClient {
         shuffle_id: u64,
         partition_id: u32,
     ) -> DaftResult<PartitionDataStream> {
+        let (num_mappers_raw, _) = {
+            let meta = self.shuffle_meta.lock().map_err(|e| {
+                DaftError::External(format!("shuffle_meta lock poisoned: {e}").into())
+            })?;
+            *meta.get(&shuffle_id).ok_or_else(|| {
+                DaftError::External(
+                    format!("shuffle {shuffle_id} not registered; call register_shuffle first")
+                        .into(),
+                )
+            })?
+        };
         let inner = Arc::clone(&self.inner);
-        let shuffle_id = to_ffi_i32(shuffle_id, "shuffle_id")?;
+        let shuffle_id_ffi = to_ffi_i32(shuffle_id, "shuffle_id")?;
         let partition_id = to_ffi_i32(partition_id, "partition_id")?;
-        let num_mappers = self.num_mappers;
+        let num_mappers = to_ffi_i32(num_mappers_raw, "num_mappers")?;
 
         let data = run_blocking("read_partition", move || {
             let mut guard = lock_client(&inner)?;
             // Must update reducer file group metadata before reading.
-            guard.0.update_reducer_file_group(shuffle_id).map_err(|e| {
-                DaftError::External(
-                    format!("Celeborn update_reducer_file_group failed: {e}").into(),
-                )
-            })?;
             guard
                 .0
-                .read_partition_all(shuffle_id, partition_id, num_mappers)
+                .update_reducer_file_group(shuffle_id_ffi)
+                .map_err(|e| {
+                    DaftError::External(
+                        format!("Celeborn update_reducer_file_group failed: {e}").into(),
+                    )
+                })?;
+            guard
+                .0
+                .read_partition_all(shuffle_id_ffi, partition_id, num_mappers)
                 .map_err(|e| {
                     DaftError::External(format!("Celeborn read_partition failed: {e}").into())
                 })

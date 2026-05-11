@@ -21,7 +21,8 @@ use crate::{
 #[derive(Clone)]
 pub(crate) struct CelebornShuffleBackendConfig {
     pub(crate) shuffle_id: u64,
-    pub(crate) master_endpoints: String,
+    pub(crate) lm_host: String,
+    pub(crate) lm_port: i32,
     pub(crate) app_id: String,
     pub(crate) compression: String,
     pub(crate) push_data_timeout_ms: u64,
@@ -32,8 +33,9 @@ pub(crate) struct CelebornShuffleBackendConfig {
 ///
 /// For Celeborn this is intentionally lightweight: the Celeborn cluster itself
 /// owns the partition location index, so reduce tasks only need to know the
-/// shuffle id; the per-task `partition_idx` is supplied separately through the
-/// task `Input::CelebornShuffle` channel (see `emit_read_tasks`).
+/// shuffle id; the per-task `partition_idx` is
+/// supplied separately through the task `Input::CelebornShuffle` channel (see
+/// `emit_read_tasks`).
 pub(crate) struct CelebornShuffleReadSpec {
     pub(crate) shuffle_id: u64,
 }
@@ -79,7 +81,7 @@ pub(crate) async fn emit_read_tasks(
     node_id: NodeID,
     schema: SchemaRef,
     num_partitions: usize,
-    backend: &CelebornShuffleBackendConfig,
+    _backend: &CelebornShuffleBackendConfig,
     read_spec: CelebornShuffleReadSpec,
     node: &dyn PipelineNodeImpl,
     result_tx: Sender<SwordfishTaskBuilder>,
@@ -90,10 +92,6 @@ pub(crate) async fn emit_read_tasks(
             schema.clone(),
             ShuffleReadBackend::Celeborn {
                 shuffle_id: read_spec.shuffle_id,
-                master_endpoints: backend.master_endpoints.clone(),
-                app_id: backend.app_id.clone(),
-                compression: backend.compression.clone(),
-                fetch_data_timeout_ms: backend.fetch_data_timeout_ms,
             },
             StatsState::NotMaterialized,
             LocalNodeContext::new(Some(node_id as usize)),
@@ -115,7 +113,8 @@ mod tests {
     fn sample_backend() -> CelebornShuffleBackendConfig {
         CelebornShuffleBackendConfig {
             shuffle_id: 42,
-            master_endpoints: "host1:9097,host2:9097".to_string(),
+            lm_host: "host1".to_string(),
+            lm_port: 9097,
             app_id: "app-123".to_string(),
             compression: "lz4".to_string(),
             push_data_timeout_ms: 60_000,
@@ -124,9 +123,9 @@ mod tests {
     }
 
     /// `read_spec_from_backend` is the bridge between the coordinator-side
-    /// backend config and the per-task read spec. Today it only forwards
+    /// backend config and the per-task read spec. Today it forwards
     /// `shuffle_id`; this test pins that contract so future changes that
-    /// accidentally drop or rename the field are caught.
+    /// accidentally drop or rename these fields are caught.
     #[test]
     fn read_spec_from_backend_forwards_shuffle_id() {
         let backend = sample_backend();
@@ -142,7 +141,8 @@ mod tests {
         let backend = sample_backend();
         let _ = read_spec_from_backend(&backend);
         assert_eq!(backend.shuffle_id, 42);
-        assert_eq!(backend.master_endpoints, "host1:9097,host2:9097");
+        assert_eq!(backend.lm_host, "host1");
+        assert_eq!(backend.lm_port, 9097);
         assert_eq!(backend.app_id, "app-123");
     }
 
