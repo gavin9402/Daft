@@ -461,8 +461,12 @@ impl BlockingSink for RepartitionSink {
                             // 1. Notify Celeborn that every local mapper attempt has
                             //    finished pushing data. Celeborn requires exactly one
                             //    `mapper_end` per `(shuffle_id, map_id, attempt_id)`.
+                            //    We collect errors but continue notifying all mappers
+                            //    so that the metadata aggregation still runs even if
+                            //    some mapper_end calls fail.
+                            let mut mapper_end_errors = Vec::new();
                             for state in &states {
-                                state
+                                if let Err(e) = state
                                     .client
                                     .mapper_end(
                                         state.shuffle_id,
@@ -470,7 +474,17 @@ impl BlockingSink for RepartitionSink {
                                         state.attempt_id,
                                         num_mappers,
                                     )
-                                    .await?;
+                                    .await
+                                {
+                                    tracing::error!(
+                                        shuffle_id = state.shuffle_id,
+                                        map_id = state.map_id,
+                                        attempt_id = state.attempt_id,
+                                        error = %e,
+                                        "Celeborn mapper_end failed"
+                                    );
+                                    mapper_end_errors.push(e);
+                                }
                             }
 
                             // 2. Aggregate per-partition row/byte counters across all
@@ -485,6 +499,12 @@ impl BlockingSink for RepartitionSink {
                                 for (i, count) in state.bytes_per_partition.iter().enumerate() {
                                     bytes_per_partition[i] += *count;
                                 }
+                            }
+
+                            // If any mapper_end calls failed, propagate the
+                            // first error after we have aggregated stats.
+                            if let Some(first_error) = mapper_end_errors.into_iter().next() {
+                                return Err(first_error);
                             }
 
                             Ok(BlockingSinkOutput::ShufflePartitionMetas(

@@ -9,7 +9,7 @@
 //! is no fault tolerance, replication, or cross-process coordination.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -31,7 +31,7 @@ struct MockState {
     /// Used by tests to assert mappers terminated correctly.
     mapper_ends: HashMap<(u64, u32, u32), u32>,
     /// Shuffles that have been unregistered.
-    unregistered: Vec<u64>,
+    unregistered: HashSet<u64>,
 }
 
 /// Process-local in-memory Celeborn client used for development and testing.
@@ -90,6 +90,10 @@ impl CelebornClient for MockShuffleCelebornClient {
         partition_id: u32,
         data: &[u8],
     ) -> DaftResult<()> {
+        // NOTE: `map_id` and `attempt_id` are intentionally ignored in the
+        // mock because real Celeborn aggregates all mappers' data for the
+        // same partition into a single stream. Keying only on
+        // `(shuffle_id, partition_id)` faithfully mirrors that behaviour.
         let mut state = self.state.lock().expect("mock state poisoned");
         state
             .partitions
@@ -132,9 +136,7 @@ impl CelebornClient for MockShuffleCelebornClient {
 
     async fn unregister_shuffle(&self, shuffle_id: u64) -> DaftResult<()> {
         let mut state = self.state.lock().expect("mock state poisoned");
-        if !state.unregistered.contains(&shuffle_id) {
-            state.unregistered.push(shuffle_id);
-        }
+        state.unregistered.insert(shuffle_id);
         state.partitions.retain(|(sid, _), _| *sid != shuffle_id);
         Ok(())
     }

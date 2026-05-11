@@ -292,9 +292,17 @@ impl<Op: BlockingSink + 'static> BlockingSinkNode<Op> {
                             .await;
                     }
                 }
-                BlockingSinkOutput::ShufflePartitionMetas(_metas) => {
+                BlockingSinkOutput::ShufflePartitionMetas(metas) => {
                     // Celeborn shuffle metadata is informational only; data
                     // has already been pushed to the remote service during sink().
+                    let total_rows: usize = metas.iter().map(|m| m.num_rows).sum();
+                    let total_bytes: usize = metas.iter().map(|m| m.size_bytes).sum();
+                    tracing::debug!(
+                        partitions = metas.len(),
+                        total_rows,
+                        total_bytes,
+                        "Celeborn shuffle write complete"
+                    );
                 }
             }
             if let Some((store, _, _, _)) = &checkpoint {

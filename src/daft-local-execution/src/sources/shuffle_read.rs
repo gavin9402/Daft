@@ -389,7 +389,16 @@ async fn forward_celeborn_partition_stream(
         // (see `RepartitionSink::sink` Celeborn branch). We decode the entire
         // chunk into one `MicroPartition` rather than per-batch so that
         // downstream operators see the same morsel granularity as the writer.
-        let mp = MicroPartition::read_from_ipc_stream(&bytes)?;
+        let mp = MicroPartition::read_from_ipc_stream(&bytes).map_err(|e| {
+            common_error::DaftError::External(
+                format!(
+                    "Celeborn shuffle read: failed to decode Arrow IPC stream \
+                     ({} bytes) for input {input_id}: {e}",
+                    bytes.len()
+                )
+                .into(),
+            )
+        })?;
         if mp.is_empty() {
             continue;
         }

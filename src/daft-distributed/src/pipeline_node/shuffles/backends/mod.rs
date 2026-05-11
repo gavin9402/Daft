@@ -113,6 +113,10 @@ impl ShuffleBackend {
                 master_endpoints: cfg.master_endpoints,
                 app_id: cfg.app_id,
                 compression: cfg.compression,
+                // `num_mappers` is populated later by the execution loop once
+                // all map tasks have been materialized and counted. At this
+                // point we use 0 as a placeholder; the real value is injected
+                // before the local plan is sent to workers.
                 num_mappers: 0,
                 push_data_timeout_ms: cfg.push_data_timeout_ms,
             },
