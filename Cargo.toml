@@ -110,7 +110,6 @@ python = [
   "daft-recordbatch/python",
   "daft-writers/python"
 ]
-celeborn = ["daft-shuffles/celeborn"]
 
 [lib]
 crate-type = ["cdylib"]
