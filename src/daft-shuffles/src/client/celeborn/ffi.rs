@@ -255,19 +255,37 @@ impl CelebornClient for ShuffleCelebornClient {
         })
         .await?;
 
-        // Wrap the returned bytes as a single-chunk stream.
+        // The C++ SDK only exposes `read_partition_all` which returns all
+        // data for a partition as a single contiguous `Vec<u8>`. The returned
+        // buffer is a concatenation of self-contained Arrow IPC streams, one
+        // per mapper push. We cannot split it by fixed byte size because that
+        // would break IPC stream boundaries and cause deserialization failures
+        // on the reduce side (`forward_celeborn_partition_stream` calls
+        // `read_from_ipc_stream` on each chunk independently).
+        //
+        // A proper streaming solution requires either:
+        //   (a) a new C++ FFI API that yields one IPC stream per mapper, or
+        //   (b) an IPC-aware splitter that parses stream boundaries.
+        //
+        // For now we wrap the full buffer as a single-element stream.
         let bytes = Bytes::from(data);
         Ok(Box::pin(stream::once(async move { Ok(bytes) })))
     }
 
-    /// No-op in the current FFI layer.
+    /// Clean up local per-shuffle metadata.
     ///
     /// The underlying `celeborn_client::ShuffleClient` C++ FFI does not expose
-    /// an explicit `unregister_shuffle` API. Shuffle data cleanup is handled
-    /// by the Celeborn cluster's own garbage-collection mechanism
-    /// (LifecycleManager timeout / application heartbeat expiry), so the
-    /// client side does not need to take any action here.
-    async fn unregister_shuffle(&self, _shuffle_id: u64) -> DaftResult<()> {
+    /// an explicit `unregister_shuffle` API, so server-side cleanup relies on
+    /// the Celeborn cluster's own garbage-collection mechanism
+    /// (LifecycleManager timeout / application heartbeat expiry). However, we
+    /// still remove the local `shuffle_meta` entry to avoid unbounded memory
+    /// growth when many shuffles are executed through the same client instance.
+    async fn unregister_shuffle(&self, shuffle_id: u64) -> DaftResult<()> {
+        let mut meta = self
+            .shuffle_meta
+            .lock()
+            .map_err(|e| DaftError::External(format!("shuffle_meta lock poisoned: {e}").into()))?;
+        meta.remove(&shuffle_id);
         Ok(())
     }
 }

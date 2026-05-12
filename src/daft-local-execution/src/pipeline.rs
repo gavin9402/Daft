@@ -1698,13 +1698,17 @@ fn physical_plan_to_pipeline(
                     .boxed()
                 }
                 #[cfg(feature = "celeborn")]
-                ShuffleBackend::Celeborn { shuffle_id, .. } => {
+                ShuffleBackend::Celeborn {
+                    shuffle_id,
+                    num_mappers,
+                } => {
                     let client = ctx.celeborn_client().expect(
                         "Celeborn client must be set on BuilderContext before pipeline translation",
                     );
                     let repartition_sink = RepartitionSink::new_celeborn(
                         *num_partitions,
                         *shuffle_id,
+                        *num_mappers,
                         repartition_spec.clone(),
                         client,
                     );

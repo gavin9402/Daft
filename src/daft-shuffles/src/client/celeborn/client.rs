@@ -78,6 +78,10 @@ pub trait CelebornClient: Send + Sync {
 
     /// Push a single partition payload to the Celeborn cluster.
     ///
+    /// `register_shuffle` must have been called for this `shuffle_id` before
+    /// calling `push_data`. The client retrieves `num_mappers` and
+    /// `num_partitions` from the internally stored metadata.
+    ///
     /// * `shuffle_id` - Logical shuffle identifier shared by all mappers/reducers
     ///   participating in this shuffle.
     /// * `map_id` - Index of the current map task, in `[0, num_mappers)`.

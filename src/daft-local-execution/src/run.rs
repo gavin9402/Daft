@@ -37,7 +37,6 @@ use {
     daft_partition_refs::PyFlightPartitionRef,
     pyo3::{
         Bound, IntoPyObject, PyAny, PyRef, PyResult, Python, pyclass, pymethods, sync::MutexExt,
-        types::PyAnyMethods,
     },
 };
 
@@ -205,36 +204,40 @@ impl PyNativeExecutor {
     }
 
     /// Connect to a Celeborn LifecycleManager and set the resulting client
-    /// on this executor. Must be called before any shuffle task that uses
-    /// the Celeborn backend.
+    /// on this executor.
+    ///
+    /// Configuration is read from the `DaftExecutionConfig.celeborn` field.
+    /// Must be called before any shuffle task that uses the Celeborn backend.
     ///
     /// # Arguments
-    /// * `config` - A Python dict with keys: `lm_host` (str), `lm_port` (int),
-    ///   and optionally `app_id` (str, default `""`), `compression` (str,
-    ///   default `"lz4"`).
+    /// * `daft_execution_config` - A `PyDaftExecutionConfig` whose inner
+    ///   `celeborn` field supplies the connection parameters (lm_host,
+    ///   lm_port, app_id, compression).
     #[cfg(feature = "celeborn")]
-    pub fn set_celeborn_client(&self, py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<()> {
-        let lm_host: String = config.get_item("lm_host")?.extract::<String>()?;
-        let lm_port: i32 = config.get_item("lm_port")?.extract::<i32>()?;
-        let app_id: String = config
-            .get_item("app_id")
-            .and_then(|v| v.extract::<String>())
-            .unwrap_or_default();
-        let compression: String = config
-            .get_item("compression")
-            .and_then(|v| v.extract::<String>())
-            .unwrap_or_else(|_| "lz4".to_string());
+    pub fn set_celeborn_client(
+        &self,
+        py: Python<'_>,
+        daft_execution_config: &PyDaftExecutionConfig,
+    ) -> PyResult<()> {
+        let exec_config = daft_execution_config.config.as_ref();
+        let celeborn_cfg = exec_config.celeborn.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(
+                "DaftExecutionConfig.celeborn is None; \
+                 set celeborn config via with_config_values() before calling set_celeborn_client()",
+            )
+        })?;
 
-        let celeborn_config = daft_shuffles::client::celeborn::CelebornClientConfig {
-            lm_host: lm_host.clone(),
-            lm_port,
-            app_id,
-            compression,
+        let client_config = daft_shuffles::client::celeborn::CelebornClientConfig {
+            lm_host: celeborn_cfg.lm_host.clone(),
+            lm_port: celeborn_cfg.lm_port,
+            app_id: celeborn_cfg.app_id.clone(),
+            compression: celeborn_cfg.compression.clone(),
         };
-        let client = daft_shuffles::client::celeborn::connect_celeborn_client(&celeborn_config)
+        let client = daft_shuffles::client::celeborn::connect_celeborn_client(&client_config)
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "Failed to connect to Celeborn LifecycleManager at {lm_host}:{lm_port}: {e}"
+                    "Failed to connect to Celeborn LifecycleManager at {}:{}: {e}",
+                    celeborn_cfg.lm_host, celeborn_cfg.lm_port
                 ))
             })?;
         self.executor

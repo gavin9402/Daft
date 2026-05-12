@@ -25,8 +25,6 @@ pub(crate) struct CelebornShuffleBackendConfig {
     pub(crate) lm_port: i32,
     pub(crate) app_id: String,
     pub(crate) compression: String,
-    pub(crate) push_data_timeout_ms: u64,
-    pub(crate) fetch_data_timeout_ms: u64,
 }
 
 /// Read-stage spec carrying the metadata needed to construct reduce tasks.
@@ -117,8 +115,6 @@ mod tests {
             lm_port: 9097,
             app_id: "app-123".to_string(),
             compression: "lz4".to_string(),
-            push_data_timeout_ms: 60_000,
-            fetch_data_timeout_ms: 90_000,
         }
     }
 

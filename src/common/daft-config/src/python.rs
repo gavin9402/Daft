@@ -331,8 +331,8 @@ impl PyDaftExecutionConfig {
                 lm_port: 0,
                 app_id: String::new(),
                 compression: "lz4".to_string(),
-                push_data_timeout_ms: 120_000,
-                fetch_data_timeout_ms: 120_000,
+                push_data_timeout_ms: None,
+                fetch_data_timeout_ms: None,
             });
 
             if let Some(host) = celeborn_lm_host {
@@ -358,10 +358,10 @@ impl PyDaftExecutionConfig {
                 celeborn.compression = compression;
             }
             if let Some(timeout) = celeborn_push_data_timeout_ms {
-                celeborn.push_data_timeout_ms = timeout;
+                celeborn.push_data_timeout_ms = Some(timeout);
             }
             if let Some(timeout) = celeborn_fetch_data_timeout_ms {
-                celeborn.fetch_data_timeout_ms = timeout;
+                celeborn.fetch_data_timeout_ms = Some(timeout);
             }
 
             config.celeborn = Some(celeborn);

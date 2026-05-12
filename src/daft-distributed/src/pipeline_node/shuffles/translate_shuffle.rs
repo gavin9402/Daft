@@ -41,8 +41,6 @@ impl LogicalPlanToPipelineNodeTranslator {
                     lm_port: celeborn_cfg.lm_port,
                     app_id: celeborn_cfg.app_id.clone(),
                     compression: celeborn_cfg.compression.clone(),
-                    push_data_timeout_ms: celeborn_cfg.push_data_timeout_ms,
-                    fetch_data_timeout_ms: celeborn_cfg.fetch_data_timeout_ms,
                 })
             }
             _ => DistributedShuffleBackend::Ray,

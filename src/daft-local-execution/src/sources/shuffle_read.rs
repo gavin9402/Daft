@@ -377,6 +377,19 @@ impl CelebornShuffleReadSource {
                 }
             }
 
+            // Clean up local shuffle metadata now that all reduce tasks
+            // have completed. Server-side cleanup relies on Celeborn's
+            // own GC mechanism; this only removes the local entry from
+            // the client's `shuffle_meta` map to prevent unbounded growth.
+            if let Err(e) = client.unregister_shuffle(shuffle_id).await {
+                tracing::warn!(
+                    shuffle_id,
+                    error = %e,
+                    "Failed to unregister Celeborn shuffle; \
+                     local metadata may leak until client is dropped"
+                );
+            }
+
             Ok(())
         })
     }

@@ -2295,7 +2295,27 @@ pub enum ShuffleBackend {
     #[cfg(feature = "celeborn")]
     Celeborn {
         shuffle_id: u64,
+        /// Total number of map tasks across all workers for this shuffle.
+        /// Injected by the coordinator (distributed mode) or the local
+        /// executor (single-worker mode) so that each mapper can pass it
+        /// to `push_data` / `mapper_end` without a prior `register_shuffle`.
+        num_mappers: u32,
     },
+}
+
+impl ShuffleBackend {
+    /// Return a copy with `num_mappers` set for the Celeborn variant.
+    /// Other variants are returned unchanged.
+    #[cfg(feature = "celeborn")]
+    pub fn with_num_mappers(self, num_mappers: u32) -> Self {
+        match self {
+            Self::Celeborn { shuffle_id, .. } => Self::Celeborn {
+                shuffle_id,
+                num_mappers,
+            },
+            other => other,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

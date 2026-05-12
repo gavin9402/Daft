@@ -121,10 +121,12 @@ pub struct CelebornConfig {
     pub app_id: String,
     /// Compression codec for shuffle blocks (`"lz4"`, `"zstd"`, or `"none"`).
     pub compression: String,
-    /// Timeout in milliseconds for push_data RPCs.
-    pub push_data_timeout_ms: u64,
-    /// Timeout in milliseconds for fetch_data RPCs.
-    pub fetch_data_timeout_ms: u64,
+    /// Timeout in milliseconds for push-data RPCs. `None` means use the
+    /// Celeborn C++ client's built-in default.
+    pub push_data_timeout_ms: Option<u64>,
+    /// Timeout in milliseconds for fetch-data RPCs. `None` means use the
+    /// Celeborn C++ client's built-in default.
+    pub fetch_data_timeout_ms: Option<u64>,
 }
 
 /// Configurations for Daft to use during the execution of a Dataframe

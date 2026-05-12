@@ -76,15 +76,20 @@ pub(crate) struct CelebornRepartitionState {
     shuffle_id: u64,
     map_id: u32,
     attempt_id: u32,
+    /// Total number of map tasks for this shuffle (global, from coordinator).
+    num_mappers: u32,
+    /// Whether `register_shuffle` has been called for this shuffle. The
+    /// registration is performed lazily on the first `sink()` call because
+    /// `make_state()` is synchronous while `register_shuffle` is async.
+    /// Multiple mappers sharing the same `CelebornClient` may race, but
+    /// `register_shuffle` is idempotent (it just inserts into a HashMap).
+    registered: bool,
     /// Cumulative row count per partition observed by this mapper.
     rows_per_partition: Vec<usize>,
     /// Cumulative byte count per partition observed by this mapper (Arrow IPC
     /// stream bytes actually pushed).
     bytes_per_partition: Vec<usize>,
-    /// Whether `register_shuffle` has already been called for this shuffle.
-    /// The registration is performed lazily on the first `sink()` call
-    /// because pipeline construction runs outside of a tokio runtime context.
-    registered: bool,
+    num_partitions: u32,
 }
 
 pub(crate) enum RepartitionState {
@@ -129,6 +134,7 @@ enum RepartitionBackend {
     Celeborn {
         num_partitions: usize,
         shuffle_id: u64,
+        num_mappers: u32,
         repartition_spec: RepartitionSpec,
         client: Arc<dyn CelebornClient>,
     },
@@ -190,10 +196,12 @@ impl RepartitionSink {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[cfg(feature = "celeborn")]
     pub fn new_celeborn(
         num_partitions: usize,
         shuffle_id: u64,
+        num_mappers: u32,
         repartition_spec: RepartitionSpec,
         client: Arc<dyn CelebornClient>,
     ) -> Self {
@@ -201,6 +209,7 @@ impl RepartitionSink {
             backend: RepartitionBackend::Celeborn {
                 num_partitions,
                 shuffle_id,
+                num_mappers,
                 repartition_spec: repartition_spec.clone(),
                 client,
             },
@@ -296,14 +305,19 @@ impl BlockingSink for RepartitionSink {
                 spawner
                     .spawn(
                         async move {
-                            // Lazily register the shuffle the first time a
-                            // mapper pushes data. Pipeline construction runs
-                            // outside of a tokio runtime, so we defer the
-                            // (async) registration to the first sink() call.
+                            // Lazily register the shuffle on the first sink()
+                            // call. `make_state` is synchronous so we cannot
+                            // call the async `register_shuffle` there.
+                            // `register_shuffle` is idempotent, so concurrent
+                            // mappers racing here are safe.
                             if !state.registered {
                                 state
                                     .client
-                                    .register_shuffle(state.shuffle_id, 1, num_partitions as u32)
+                                    .register_shuffle(
+                                        state.shuffle_id,
+                                        state.num_mappers,
+                                        state.num_partitions,
+                                    )
                                     .await?;
                                 state.registered = true;
                             }
@@ -477,6 +491,7 @@ impl BlockingSink for RepartitionSink {
                     .map(|state| match state {
                         #[cfg(feature = "celeborn")]
                         RepartitionState::Celeborn(state) => state,
+                        #[cfg(feature = "celeborn")]
                         _ => {
                             panic!("RepartitionSink state/backend mismatch")
                         }
@@ -489,25 +504,27 @@ impl BlockingSink for RepartitionSink {
                             // 1. Notify Celeborn that every local mapper attempt has
                             //    finished pushing data. Celeborn requires exactly one
                             //    `mapper_end` per `(shuffle_id, map_id, attempt_id)`.
-                            //    We collect errors but continue notifying all mappers
-                            //    so that the metadata aggregation still runs even if
-                            //    some mapper_end calls fail.
-                            let mut mapper_end_errors = Vec::new();
+                            //
+                            //    We fail fast on the first error: if a mapper_end call
+                            //    fails, the Celeborn cluster will not have received all
+                            //    completion signals, making the shuffle incomplete.
+                            //    Continuing would lead to a reduce-side read of
+                            //    potentially inconsistent data.
                             for state in &states {
-                                if let Err(e) = state
+                                state
                                     .client
                                     .mapper_end(state.shuffle_id, state.map_id, state.attempt_id)
                                     .await
-                                {
-                                    tracing::error!(
-                                        shuffle_id = state.shuffle_id,
-                                        map_id = state.map_id,
-                                        attempt_id = state.attempt_id,
-                                        error = %e,
-                                        "Celeborn mapper_end failed"
-                                    );
-                                    mapper_end_errors.push(e);
-                                }
+                                    .map_err(|e| {
+                                        tracing::error!(
+                                            shuffle_id = state.shuffle_id,
+                                            map_id = state.map_id,
+                                            attempt_id = state.attempt_id,
+                                            error = %e,
+                                            "Celeborn mapper_end failed; aborting finalize"
+                                        );
+                                        e
+                                    })?;
                             }
 
                             // 2. Aggregate per-partition row/byte counters across all
@@ -522,12 +539,6 @@ impl BlockingSink for RepartitionSink {
                                 for (i, count) in state.bytes_per_partition.iter().enumerate() {
                                     bytes_per_partition[i] += *count;
                                 }
-                            }
-
-                            // If any mapper_end calls failed, propagate the
-                            // first error after we have aggregated stats.
-                            if let Some(first_error) = mapper_end_errors.into_iter().next() {
-                                return Err(first_error);
                             }
 
                             Ok(BlockingSinkOutput::ShufflePartitionMetas(
@@ -618,22 +629,24 @@ impl BlockingSink for RepartitionSink {
             RepartitionBackend::Celeborn {
                 num_partitions,
                 shuffle_id,
+                num_mappers,
                 client,
                 ..
             } => {
                 // `InputId` is u32 in the local-execution layer; map it directly
                 // to Celeborn's `map_id`. `attempt_id` is fixed at 0 because Daft
-                // does not currently use speculative execution at the worker
-                // level — when it does, this will need to be sourced from the
-                // task scheduler.
+                // does not currently support speculative execution — retry attempts
+                // are handled separately by the scheduler, so this is always 0.
                 Ok(RepartitionState::Celeborn(CelebornRepartitionState {
                     client: client.clone(),
                     shuffle_id: *shuffle_id,
                     map_id: input_id,
-                    attempt_id: input_id,
+                    attempt_id: 0,
+                    num_mappers: *num_mappers,
+                    registered: false,
                     rows_per_partition: vec![0; *num_partitions],
                     bytes_per_partition: vec![0; *num_partitions],
-                    registered: false,
+                    num_partitions: *num_partitions as u32,
                 }))
             }
         }

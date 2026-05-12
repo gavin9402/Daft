@@ -71,8 +71,6 @@ impl ShuffleBackend {
                         lm_port: backend.lm_port,
                         app_id: backend.app_id,
                         compression: backend.compression,
-                        push_data_timeout_ms: backend.push_data_timeout_ms,
-                        fetch_data_timeout_ms: backend.fetch_data_timeout_ms,
                     })
                 }
             },
@@ -118,6 +116,13 @@ impl ShuffleBackend {
             #[cfg(feature = "celeborn")]
             DistributedShuffleBackend::Celeborn(cfg) => LocalShuffleBackend::Celeborn {
                 shuffle_id: cfg.shuffle_id,
+                // In distributed mode, num_mappers is not yet known at plan
+                // generation time — it depends on how many map tasks the
+                // scheduler produces. The coordinator must set this field
+                // before serializing the plan to each worker.
+                // For now we pass 0 as a sentinel; the scheduler fills in
+                // the real value when it builds the per-worker plan.
+                num_mappers: 0,
             },
         }
     }

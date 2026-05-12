@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use common_error::DaftResult;
 use common_metrics::ops::{NodeCategory, NodeType};
-use daft_local_plan::{LocalNodeContext, LocalPhysicalPlan};
+use daft_local_plan::{LocalNodeContext, LocalPhysicalPlan, LocalPhysicalPlanRef};
 use daft_logical_plan::{partitioning::RepartitionSpec, stats::StatsState};
 use daft_schema::schema::SchemaRef;
+use futures::StreamExt;
 
 use crate::{
     pipeline_node::{
@@ -78,41 +79,76 @@ impl RepartitionNode {
         result_tx: Sender<SwordfishTaskBuilder>,
         scheduler_handle: SchedulerHandle<SwordfishTask>,
     ) -> DaftResult<()> {
-        let outputs = local_shuffle_write_node.materialize(
-            scheduler_handle.clone(),
-            self.context.query_idx,
-            task_id_counter,
-        );
-
-        match self.shuffle_backend.backend() {
+        // For Celeborn shuffles, `num_mappers` is not known until all map task
+        // builders have been produced by upstream nodes. We collect all
+        // builders, compute the real count, then inject it into each plan's
+        // `ShuffleBackend::Celeborn` before materializing (i.e. submitting
+        // tasks to workers).
+        let is_celeborn = {
             #[cfg(feature = "celeborn")]
-            DistributedShuffleBackend::Celeborn(_) => {
-                // Celeborn mappers push data directly to the remote service
-                // during sink(); the coordinator only needs to wait for all
-                // map tasks to finish before emitting reduce tasks. The
-                // materialized outputs carry no partition refs (data lives on
-                // Celeborn), so we drain the stream without transposing.
-                use futures::TryStreamExt;
-                let _: Vec<_> = outputs.try_collect().await?;
-
-                self.shuffle_backend
-                    .emit_read_tasks(vec![], self.as_ref(), result_tx, self.num_partitions)
-                    .await
+            {
+                matches!(
+                    self.shuffle_backend.backend(),
+                    DistributedShuffleBackend::Celeborn(_)
+                )
             }
-            _ => {
-                let transposed_outputs =
-                    transpose_materialized_outputs_from_stream(outputs, self.num_partitions)
-                        .await?;
-
-                self.shuffle_backend
-                    .emit_read_tasks(
-                        transposed_outputs,
-                        self.as_ref(),
-                        result_tx,
-                        self.num_partitions,
-                    )
-                    .await
+            #[cfg(not(feature = "celeborn"))]
+            {
+                false
             }
+        };
+
+        let query_idx = self.context.query_idx;
+        #[cfg(feature = "celeborn")]
+        let outputs = if is_celeborn {
+            let builders: Vec<SwordfishTaskBuilder> = local_shuffle_write_node.collect().await;
+            let num_mappers = builders.len() as u32;
+
+            let patched_stream = futures::stream::iter(builders.into_iter().map(move |builder| {
+                builder.map_plan_without_node(|plan| inject_celeborn_num_mappers(plan, num_mappers))
+            }))
+            .map(move |builder| builder.build(query_idx, &task_id_counter));
+
+            crate::pipeline_node::materialize::materialize_all_pipeline_outputs(
+                patched_stream,
+                scheduler_handle.clone(),
+                None,
+            )
+            .boxed()
+        } else {
+            local_shuffle_write_node
+                .materialize(scheduler_handle.clone(), query_idx, task_id_counter)
+                .boxed()
+        };
+        #[cfg(not(feature = "celeborn"))]
+        let outputs = local_shuffle_write_node
+            .materialize(scheduler_handle.clone(), query_idx, task_id_counter)
+            .boxed();
+
+        if is_celeborn {
+            // Celeborn mappers push data directly to the remote service
+            // during sink(); the coordinator only needs to wait for all
+            // map tasks to finish before emitting reduce tasks. The
+            // materialized outputs carry no partition refs (data lives on
+            // Celeborn), so we drain the stream without transposing.
+            use futures::TryStreamExt;
+            let _: Vec<_> = outputs.try_collect().await?;
+
+            self.shuffle_backend
+                .emit_read_tasks(vec![], self.as_ref(), result_tx, self.num_partitions)
+                .await
+        } else {
+            let transposed_outputs =
+                transpose_materialized_outputs_from_stream(outputs, self.num_partitions).await?;
+
+            self.shuffle_backend
+                .emit_read_tasks(
+                    transposed_outputs,
+                    self.as_ref(),
+                    result_tx,
+                    self.num_partitions,
+                )
+                .await
         }
     }
 }
@@ -189,5 +225,30 @@ impl PipelineNodeImpl for RepartitionNode {
         )];
         res.extend(self.repartition_spec.multiline_display());
         res
+    }
+}
+
+/// Replace `ShuffleBackend::Celeborn { num_mappers: 0, .. }` in the outermost
+/// `RepartitionWrite` node with the real `num_mappers` value.
+///
+/// The plan produced by `pipeline_instruction` always places
+/// `RepartitionWrite` as the root node wrapping the upstream input, so a
+/// single top-level match is sufficient.
+#[cfg(feature = "celeborn")]
+fn inject_celeborn_num_mappers(
+    plan: LocalPhysicalPlanRef,
+    num_mappers: u32,
+) -> LocalPhysicalPlanRef {
+    match plan.as_ref() {
+        LocalPhysicalPlan::RepartitionWrite(rw) => LocalPhysicalPlan::repartition_write(
+            rw.input.clone(),
+            rw.num_partitions,
+            rw.schema.clone(),
+            rw.backend.clone().with_num_mappers(num_mappers),
+            rw.repartition_spec.clone(),
+            rw.stats_state.clone(),
+            rw.context.clone(),
+        ),
+        _ => plan,
     }
 }

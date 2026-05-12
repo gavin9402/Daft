@@ -150,6 +150,7 @@ impl CelebornClient for MockShuffleCelebornClient {
         let mut state = self.state.lock().expect("mock state poisoned");
         state.unregistered.insert(shuffle_id);
         state.partitions.retain(|(sid, _), _| *sid != shuffle_id);
+        state.shuffle_meta.remove(&shuffle_id);
         Ok(())
     }
 }
