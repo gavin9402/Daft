@@ -2292,6 +2292,7 @@ pub enum ShuffleBackend {
         shuffle_dirs: Vec<String>,
         compression: Option<String>,
     },
+    #[cfg(feature = "celeborn")]
     Celeborn {
         shuffle_id: u64,
     },
@@ -2304,6 +2305,7 @@ pub enum ShuffleReadBackend {
         shuffle_id: u64,
         server_cache_mapping: HashMap<String, Vec<u32>>,
     },
+    #[cfg(feature = "celeborn")]
     Celeborn {
         shuffle_id: u64,
     },
@@ -2343,6 +2345,7 @@ pub struct FlightShuffleReadInput {
     pub refs: Vec<FlightPartitionRef>,
 }
 
+#[cfg(feature = "celeborn")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CelebornShuffleReadInput {
     pub partition_idx: usize,

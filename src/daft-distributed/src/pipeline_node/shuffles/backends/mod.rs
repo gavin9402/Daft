@@ -15,11 +15,14 @@ use crate::{
     utils::channel::Sender,
 };
 
+#[cfg(feature = "celeborn")]
 mod celeborn;
 mod flight;
 mod ray;
 
+#[cfg(feature = "celeborn")]
 pub(crate) use celeborn::CelebornShuffleBackendConfig;
+#[cfg(feature = "celeborn")]
 use celeborn::CelebornShuffleReadSpec;
 pub(crate) use flight::FlightShuffleBackendConfig;
 
@@ -31,6 +34,7 @@ fn make_shuffle_id(context: &PipelineNodeContext) -> u64 {
 pub(crate) enum DistributedShuffleBackend {
     Ray,
     Flight(FlightShuffleBackendConfig),
+    #[cfg(feature = "celeborn")]
     Celeborn(CelebornShuffleBackendConfig),
 }
 
@@ -59,6 +63,7 @@ impl ShuffleBackend {
                         compression: backend.compression,
                     })
                 }
+                #[cfg(feature = "celeborn")]
                 DistributedShuffleBackend::Celeborn(backend) => {
                     DistributedShuffleBackend::Celeborn(CelebornShuffleBackendConfig {
                         shuffle_id: make_shuffle_id(context),
@@ -92,6 +97,7 @@ impl ShuffleBackend {
             DistributedShuffleBackend::Flight(backend) => {
                 flight::register_cleanup(backend, plan_context);
             }
+            #[cfg(feature = "celeborn")]
             DistributedShuffleBackend::Celeborn(backend) => {
                 celeborn::register_cleanup(backend, plan_context);
             }
@@ -109,6 +115,7 @@ impl ShuffleBackend {
                 shuffle_dirs: cfg.shuffle_dirs,
                 compression: cfg.compression,
             },
+            #[cfg(feature = "celeborn")]
             DistributedShuffleBackend::Celeborn(cfg) => LocalShuffleBackend::Celeborn {
                 shuffle_id: cfg.shuffle_id,
             },
@@ -169,6 +176,7 @@ impl ShuffleBackend {
                     vec![FlightShuffleReadInput { refs: flight_refs }],
                 )
             }
+            #[cfg(feature = "celeborn")]
             DistributedShuffleBackend::Celeborn(_) => {
                 unreachable!("Celeborn does not use produce_read_task; use emit_read_tasks instead")
             }
@@ -203,6 +211,7 @@ impl ShuffleBackend {
                 )
                 .await
             }
+            #[cfg(feature = "celeborn")]
             DistributedShuffleBackend::Celeborn(backend) => {
                 let read_spec: CelebornShuffleReadSpec = celeborn::read_spec_from_backend(backend);
                 celeborn::emit_read_tasks(

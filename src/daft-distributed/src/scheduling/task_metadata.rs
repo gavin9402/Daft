@@ -43,6 +43,7 @@ impl SwordfishTask {
                 // TODO: support glob and flight shuffle inputs
                 Input::GlobPaths(_paths) => {}
                 Input::FlightShuffle(_inputs) => {}
+                #[cfg(feature = "celeborn")]
                 Input::CelebornShuffle(_) => {}
                 Input::InMemory(_) => {
                     debug_assert!(

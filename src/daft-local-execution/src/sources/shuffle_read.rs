@@ -9,14 +9,15 @@ use common_error::DaftResult;
 use common_metrics::ops::NodeType;
 use common_runtime::{JoinSet, combine_stream, get_compute_pool_num_threads, get_io_runtime};
 use daft_core::prelude::SchemaRef;
-use daft_local_plan::{CelebornShuffleReadInput, FlightShuffleReadInput, InputId};
+#[cfg(feature = "celeborn")]
+use daft_local_plan::CelebornShuffleReadInput;
+use daft_local_plan::{FlightShuffleReadInput, InputId};
 use daft_micropartition::MicroPartition;
 use daft_partition_refs::FlightPartitionRef;
 use daft_recordbatch::RecordBatch;
-use daft_shuffles::{
-    client::{FlightClientManager, celeborn::CelebornClient},
-    server::flight_server::ShuffleFlightServer,
-};
+#[cfg(feature = "celeborn")]
+use daft_shuffles::client::celeborn::CelebornClient;
+use daft_shuffles::{client::FlightClientManager, server::flight_server::ShuffleFlightServer};
 use futures::{FutureExt, StreamExt, stream::BoxStream};
 use tracing::instrument;
 
@@ -255,6 +256,7 @@ async fn forward_partition_stream(
 /// Arrow IPC bytes. There is no "local vs remote" distinction and no
 /// per-mapper fan-out on the reader: one `read_partition` call returns all
 /// blocks for the partition.
+#[cfg(feature = "celeborn")]
 pub struct CelebornShuffleReadSource {
     receiver: UnboundedReceiver<(InputId, Vec<CelebornShuffleReadInput>)>,
     shuffle_id: u64,
@@ -263,6 +265,7 @@ pub struct CelebornShuffleReadSource {
     num_parallel_tasks: usize,
 }
 
+#[cfg(feature = "celeborn")]
 impl CelebornShuffleReadSource {
     pub fn try_new(
         receiver: UnboundedReceiver<(InputId, Vec<CelebornShuffleReadInput>)>,
@@ -299,6 +302,14 @@ impl CelebornShuffleReadSource {
 
         let io_runtime = get_io_runtime(true);
         io_runtime.spawn(async move {
+            // Lazily register the shuffle so that `read_partition` can look up
+            // `num_mappers` from the client's local `shuffle_meta`. The write
+            // side may run on a different Worker with its own client instance,
+            // so we must register here as well. `num_mappers` = 1 and
+            // `num_partitions` = 0 are acceptable because `read_partition`
+            // only uses `num_mappers` from the metadata.
+            client.register_shuffle(shuffle_id, 1, 0).await?;
+
             let mut task_set: JoinSet<DaftResult<InputId>> = JoinSet::new();
             let mut pending_tasks: VecDeque<(InputId, CelebornShuffleReadInput)> = VecDeque::new();
             let mut input_id_pending_counts: HashMap<InputId, usize> = HashMap::new();
@@ -374,6 +385,7 @@ impl CelebornShuffleReadSource {
 /// Decode each Arrow-IPC byte chunk returned by `CelebornClient::read_partition`
 /// into a `MicroPartition` and forward it as a `Morsel` to the downstream
 /// pipeline. Empty chunks are dropped to avoid sending zero-row morsels.
+#[cfg(feature = "celeborn")]
 async fn forward_celeborn_partition_stream(
     mut stream: BoxStream<'static, DaftResult<bytes::Bytes>>,
     _schema: SchemaRef,
@@ -416,6 +428,7 @@ async fn forward_celeborn_partition_stream(
     Ok(input_id)
 }
 
+#[cfg(feature = "celeborn")]
 #[async_trait]
 impl Source for CelebornShuffleReadSource {
     fn name(&self) -> NodeName {

@@ -10,8 +10,9 @@ use daft_dsl::expr::bound_expr::BoundExpr;
 use daft_logical_plan::partitioning::RepartitionSpec;
 use daft_micropartition::MicroPartition;
 use daft_partition_refs::FlightPartitionRef;
+#[cfg(feature = "celeborn")]
+use daft_shuffles::client::celeborn::CelebornClient;
 use daft_shuffles::{
-    client::celeborn::CelebornClient,
     server::flight_server::ShuffleFlightServer,
     shuffle_cache::{InProgressShuffleCache, partition_ref_id},
 };
@@ -69,6 +70,7 @@ impl FlightRepartitionState {
 /// (`map_id`, derived from `InputId`), and per-partition counters maintained
 /// across `sink()` calls so that `finalize()` can produce
 /// `ShufflePartitionMetadata` without a second pass over the data.
+#[cfg(feature = "celeborn")]
 pub(crate) struct CelebornRepartitionState {
     client: Arc<dyn CelebornClient>,
     shuffle_id: u64,
@@ -79,11 +81,16 @@ pub(crate) struct CelebornRepartitionState {
     /// Cumulative byte count per partition observed by this mapper (Arrow IPC
     /// stream bytes actually pushed).
     bytes_per_partition: Vec<usize>,
+    /// Whether `register_shuffle` has already been called for this shuffle.
+    /// The registration is performed lazily on the first `sink()` call
+    /// because pipeline construction runs outside of a tokio runtime context.
+    registered: bool,
 }
 
 pub(crate) enum RepartitionState {
     Ray(RayRepartitionState),
     Flight(FlightRepartitionState),
+    #[cfg(feature = "celeborn")]
     Celeborn(CelebornRepartitionState),
 }
 
@@ -96,6 +103,7 @@ impl RepartitionState {
                 Ok(())
             }
             Self::Flight(state) => state.push(parts).await,
+            #[cfg(feature = "celeborn")]
             Self::Celeborn(_) => {
                 unreachable!("Celeborn state push is handled in sink() directly")
             }
@@ -117,6 +125,7 @@ enum RepartitionBackend {
         // Only accessed from the single-threaded event loop; Mutex is just for Sync.
         partitions: Mutex<HashMap<InputId, Arc<Vec<Arc<InProgressShuffleCache>>>>>,
     },
+    #[cfg(feature = "celeborn")]
     Celeborn {
         num_partitions: usize,
         shuffle_id: u64,
@@ -130,6 +139,7 @@ impl RepartitionBackend {
         match &self {
             Self::Ray { .. } => "Ray",
             Self::Flight { .. } => "Flight",
+            #[cfg(feature = "celeborn")]
             Self::Celeborn { .. } => "Celeborn",
         }
     }
@@ -180,6 +190,7 @@ impl RepartitionSink {
         })
     }
 
+    #[cfg(feature = "celeborn")]
     pub fn new_celeborn(
         num_partitions: usize,
         shuffle_id: u64,
@@ -264,6 +275,7 @@ impl BlockingSink for RepartitionSink {
                     Span::current(),
                 )
                 .into(),
+            #[cfg(feature = "celeborn")]
             (
                 RepartitionBackend::Celeborn {
                     repartition_spec,
@@ -284,6 +296,18 @@ impl BlockingSink for RepartitionSink {
                 spawner
                     .spawn(
                         async move {
+                            // Lazily register the shuffle the first time a
+                            // mapper pushes data. Pipeline construction runs
+                            // outside of a tokio runtime, so we defer the
+                            // (async) registration to the first sink() call.
+                            if !state.registered {
+                                state
+                                    .client
+                                    .register_shuffle(state.shuffle_id, 1, num_partitions as u32)
+                                    .await?;
+                                state.registered = true;
+                            }
+
                             let partitioned = match &partition_by {
                                 Some(partition_by) => {
                                     let partition_by =
@@ -341,7 +365,11 @@ impl BlockingSink for RepartitionSink {
                     .into_iter()
                     .map(|state| match state {
                         RepartitionState::Ray(state) => state,
-                        RepartitionState::Flight(_) | RepartitionState::Celeborn(_) => {
+                        #[cfg(feature = "celeborn")]
+                        RepartitionState::Celeborn(_) => {
+                            panic!("RepartitionSink state/backend mismatch")
+                        }
+                        RepartitionState::Flight(_) => {
                             panic!("RepartitionSink state/backend mismatch")
                         }
                     })
@@ -398,7 +426,11 @@ impl BlockingSink for RepartitionSink {
                     .into_iter()
                     .map(|state| match state {
                         RepartitionState::Flight(state) => state,
-                        RepartitionState::Ray(_) | RepartitionState::Celeborn(_) => {
+                        #[cfg(feature = "celeborn")]
+                        RepartitionState::Celeborn(_) => {
+                            panic!("RepartitionSink state/backend mismatch")
+                        }
+                        RepartitionState::Ray(_) => {
                             panic!("RepartitionSink state/backend mismatch")
                         }
                     })
@@ -437,13 +469,15 @@ impl BlockingSink for RepartitionSink {
                     )
                     .into()
             }
+            #[cfg(feature = "celeborn")]
             RepartitionBackend::Celeborn { .. } => {
                 let num_partitions = self.num_partitions;
                 let states = states
                     .into_iter()
                     .map(|state| match state {
+                        #[cfg(feature = "celeborn")]
                         RepartitionState::Celeborn(state) => state,
-                        RepartitionState::Ray(_) | RepartitionState::Flight(_) => {
+                        _ => {
                             panic!("RepartitionSink state/backend mismatch")
                         }
                     })
@@ -580,6 +614,7 @@ impl BlockingSink for RepartitionSink {
                     partitions: partition_set,
                 }))
             }
+            #[cfg(feature = "celeborn")]
             RepartitionBackend::Celeborn {
                 num_partitions,
                 shuffle_id,
@@ -598,6 +633,7 @@ impl BlockingSink for RepartitionSink {
                     attempt_id: input_id,
                     rows_per_partition: vec![0; *num_partitions],
                     bytes_per_partition: vec![0; *num_partitions],
+                    registered: false,
                 }))
             }
         }

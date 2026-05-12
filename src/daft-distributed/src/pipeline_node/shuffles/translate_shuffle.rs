@@ -4,12 +4,12 @@ use common_error::DaftResult;
 use daft_logical_plan::partitioning::RepartitionSpec;
 use daft_schema::schema::SchemaRef;
 
+#[cfg(feature = "celeborn")]
+use crate::pipeline_node::shuffles::backends::CelebornShuffleBackendConfig;
 use crate::pipeline_node::{
     DistributedPipelineNode,
     shuffles::{
-        backends::{
-            CelebornShuffleBackendConfig, DistributedShuffleBackend, FlightShuffleBackendConfig,
-        },
+        backends::{DistributedShuffleBackend, FlightShuffleBackendConfig},
         gather::GatherNode,
         pre_shuffle_merge::PreShuffleMergeNode,
         repartition::RepartitionNode,
@@ -26,6 +26,7 @@ impl LogicalPlanToPipelineNodeTranslator {
                 shuffle_dirs: self.plan_config.config.flight_shuffle_dirs.clone(),
                 compression: None,
             }),
+            #[cfg(feature = "celeborn")]
             "celeborn" => {
                 let celeborn_cfg =
                     self.plan_config.config.celeborn.as_ref().expect(
@@ -121,6 +122,7 @@ impl LogicalPlanToPipelineNodeTranslator {
             "pre_shuffle_merge" => Ok(true),
             "map_reduce" => Ok(false),
             "flight_shuffle" => Ok(false), // Flight shuffle will be handled separately
+            #[cfg(feature = "celeborn")]
             "celeborn" => Ok(false), // Celeborn handles aggregation cluster-side, no local pre-merge needed
             "auto" => {
                 let total_num_partitions = input_num_partitions * target_num_partitions;

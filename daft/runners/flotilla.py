@@ -186,6 +186,19 @@ class RaySwordfishActor:
         # We import PyDaftContext inside the function because PyDaftContext is not serializable.
         from daft.daft import PyDaftContext
 
+        # Lazily inject the Celeborn client if the execution config carries
+        # Celeborn settings but the NativeExecutor hasn't been configured yet.
+        celeborn_lm_host = getattr(exec_cfg, "celeborn_lm_host", None)
+        celeborn_lm_port = getattr(exec_cfg, "celeborn_lm_port", None)
+        if celeborn_lm_host is not None and celeborn_lm_port is not None:
+            celeborn_config = {
+                "lm_host": celeborn_lm_host,
+                "lm_port": celeborn_lm_port,
+                "app_id": getattr(exec_cfg, "celeborn_app_id", "") or "",
+                "compression": getattr(exec_cfg, "celeborn_compression", "lz4") or "lz4",
+            }
+            self.native_executor.set_celeborn_client(celeborn_config)
+
         with profile():
             resolved_inputs, task_id = await self._resolve_inputs(context, inputs)
 

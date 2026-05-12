@@ -15,15 +15,17 @@ use common_metrics::{
 };
 use daft_core::{join::JoinSide, prelude::Schema};
 use daft_dsl::{common_treenode::ConcreteTreeNode, join::get_common_join_cols};
+#[cfg(feature = "celeborn")]
+use daft_local_plan::CelebornShuffleReadInput;
 pub use daft_local_plan::InputId;
 use daft_local_plan::{
-    AsofJoin, CelebornShuffleReadInput, CommitWrite, Concat, CrossJoin, Dedup, Explode, Filter,
-    FlightShuffleReadInput, GatherWrite, GlobScan, HashAggregate, HashJoin, InMemoryScan,
-    IntoBatches, Limit, LocalNodeContext, LocalPhysicalPlan, MonotonicallyIncreasingId,
-    PhysicalScan, PhysicalWrite, Pivot, Project, RepartitionWrite, Sample, ShuffleBackend,
-    ShuffleReadBackend, Sort, SortMergeJoin, SourceId, TopN, UDFProject, UnGroupedAggregate,
-    Unpivot, VLLMProject, WindowOrderByOnly, WindowPartitionAndDynamicFrame,
-    WindowPartitionAndOrderBy, WindowPartitionOnly,
+    AsofJoin, CommitWrite, Concat, CrossJoin, Dedup, Explode, Filter, FlightShuffleReadInput,
+    GatherWrite, GlobScan, HashAggregate, HashJoin, InMemoryScan, IntoBatches, Limit,
+    LocalNodeContext, LocalPhysicalPlan, MonotonicallyIncreasingId, PhysicalScan, PhysicalWrite,
+    Pivot, Project, RepartitionWrite, Sample, ShuffleBackend, ShuffleReadBackend, Sort,
+    SortMergeJoin, SourceId, TopN, UDFProject, UnGroupedAggregate, Unpivot, VLLMProject,
+    WindowOrderByOnly, WindowPartitionAndDynamicFrame, WindowPartitionAndOrderBy,
+    WindowPartitionOnly,
 };
 use daft_logical_plan::{JoinType, stats::StatsState};
 use daft_micropartition::{MicroPartition, MicroPartitionRef};
@@ -281,6 +283,7 @@ pub struct BuilderContext {
     /// the active shuffle algorithm is "celeborn". Uses `RefCell` so it can
     /// be set through a shared `&BuilderContext` reference (same pattern as
     /// `checkpoint`).
+    #[cfg(feature = "celeborn")]
     celeborn_client:
         std::cell::RefCell<Option<Arc<dyn daft_shuffles::client::celeborn::CelebornClient>>>,
 }
@@ -304,6 +307,7 @@ impl BuilderContext {
             context,
             shuffle_server,
             checkpoint: std::cell::RefCell::new(None),
+            #[cfg(feature = "celeborn")]
             celeborn_client: std::cell::RefCell::new(None),
         }
     }
@@ -336,6 +340,7 @@ impl BuilderContext {
     /// Called by `NativeExecutor::run` when a Celeborn client has been
     /// configured. Must be set before `translate_physical_plan_to_pipeline`
     /// if any plan node uses the Celeborn shuffle backend.
+    #[cfg(feature = "celeborn")]
     pub fn set_celeborn_client(
         &self,
         client: Arc<dyn daft_shuffles::client::celeborn::CelebornClient>,
@@ -343,6 +348,7 @@ impl BuilderContext {
         *self.celeborn_client.borrow_mut() = Some(client);
     }
 
+    #[cfg(feature = "celeborn")]
     pub fn celeborn_client(
         &self,
     ) -> Option<Arc<dyn daft_shuffles::client::celeborn::CelebornClient>> {
@@ -1632,6 +1638,7 @@ fn physical_plan_to_pipeline(
                     )
                     .boxed()
                 }
+                #[cfg(feature = "celeborn")]
                 daft_local_plan::ShuffleBackend::Celeborn { .. } => {
                     unimplemented!("Celeborn into_partitions is not yet supported")
                 }
@@ -1690,6 +1697,7 @@ fn physical_plan_to_pipeline(
                     )
                     .boxed()
                 }
+                #[cfg(feature = "celeborn")]
                 ShuffleBackend::Celeborn { shuffle_id, .. } => {
                     let client = ctx.celeborn_client().expect(
                         "Celeborn client must be set on BuilderContext before pipeline translation",
@@ -1757,6 +1765,7 @@ fn physical_plan_to_pipeline(
                     )
                     .boxed()
                 }
+                #[cfg(feature = "celeborn")]
                 ShuffleBackend::Celeborn { .. } => {
                     unimplemented!("Celeborn gather is not yet supported")
                 }
@@ -1792,6 +1801,7 @@ fn physical_plan_to_pipeline(
                     ShuffleReadSource::new(rx, local_server, local_address, schema.clone(), cfg);
                 SourceNode::new(Box::new(source), stats_state.clone(), ctx, context).boxed()
             }
+            #[cfg(feature = "celeborn")]
             ShuffleReadBackend::Celeborn { shuffle_id, .. } => {
                 let client = ctx.celeborn_client().expect(
                     "Celeborn client must be set on BuilderContext before pipeline translation",

@@ -86,6 +86,7 @@ impl PyLocalPhysicalPlan {
                 let (backend_name, shuffle_id) = match backend {
                     ShuffleBackend::Ray => ("ray", 0u64),
                     ShuffleBackend::Flight { shuffle_id, .. } => ("flight", *shuffle_id),
+                    #[cfg(feature = "celeborn")]
                     ShuffleBackend::Celeborn { shuffle_id, .. } => ("celeborn", *shuffle_id),
                 };
                 Some(PyShuffleWriteInfo {

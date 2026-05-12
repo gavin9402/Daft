@@ -7,14 +7,16 @@ mod results;
 mod translate;
 use daft_micropartition::MicroPartitionRef;
 use daft_scan::ScanTaskRef;
+#[cfg(feature = "celeborn")]
+pub use plan::CelebornShuffleReadInput;
 pub use plan::{
-    AsofJoin, CelebornShuffleReadInput, CommitWrite, Concat, CrossJoin, Dedup, Explode, Filter,
-    FlightShuffleReadInput, GatherWrite, GlobScan, HashAggregate, HashJoin, InMemoryScan,
-    IntoBatches, IntoPartitions, Limit, LocalNodeContext, LocalPhysicalPlan, LocalPhysicalPlanRef,
-    MonotonicallyIncreasingId, PhysicalScan, PhysicalWrite, Pivot, PlaceholderScan, Project,
-    RepartitionWrite, Sample, SamplingMethod, ShuffleBackend, ShuffleRead, ShuffleReadBackend,
-    Sort, SortMergeJoin, StageCheckpointKeys, TopN, UDFProject, UnGroupedAggregate, Unpivot,
-    VLLMProject, WindowOrderByOnly, WindowPartitionAndDynamicFrame, WindowPartitionAndOrderBy,
+    AsofJoin, CommitWrite, Concat, CrossJoin, Dedup, Explode, Filter, FlightShuffleReadInput,
+    GatherWrite, GlobScan, HashAggregate, HashJoin, InMemoryScan, IntoBatches, IntoPartitions,
+    Limit, LocalNodeContext, LocalPhysicalPlan, LocalPhysicalPlanRef, MonotonicallyIncreasingId,
+    PhysicalScan, PhysicalWrite, Pivot, PlaceholderScan, Project, RepartitionWrite, Sample,
+    SamplingMethod, ShuffleBackend, ShuffleRead, ShuffleReadBackend, Sort, SortMergeJoin,
+    StageCheckpointKeys, TopN, UDFProject, UnGroupedAggregate, Unpivot, VLLMProject,
+    WindowOrderByOnly, WindowPartitionAndDynamicFrame, WindowPartitionAndOrderBy,
     WindowPartitionOnly,
 };
 #[cfg(feature = "python")]
@@ -45,6 +47,7 @@ pub enum Input {
     ScanTasks(Vec<ScanTaskRef>),
     GlobPaths(Vec<String>),
     FlightShuffle(Vec<FlightShuffleReadInput>),
+    #[cfg(feature = "celeborn")]
     CelebornShuffle(Vec<CelebornShuffleReadInput>),
     #[serde(skip)]
     InMemory(Vec<MicroPartitionRef>),

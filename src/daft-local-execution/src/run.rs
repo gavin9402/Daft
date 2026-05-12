@@ -212,6 +212,7 @@ impl PyNativeExecutor {
     /// * `config` - A Python dict with keys: `lm_host` (str), `lm_port` (int),
     ///   and optionally `app_id` (str, default `""`), `compression` (str,
     ///   default `"lz4"`).
+    #[cfg(feature = "celeborn")]
     pub fn set_celeborn_client(&self, py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<()> {
         let lm_host: String = config.get_item("lm_host")?.extract::<String>()?;
         let lm_port: i32 = config.get_item("lm_port")?.extract::<i32>()?;
@@ -439,6 +440,7 @@ pub struct NativeExecutor {
     /// Global Celeborn shuffle client, shared across all queries/shuffles on
     /// this worker. Created once via [`Self::set_celeborn_client`] and injected
     /// into every [`BuilderContext`] so that pipeline nodes can use it.
+    #[cfg(feature = "celeborn")]
     celeborn_client: Option<Arc<dyn daft_shuffles::client::celeborn::CelebornClient>>,
     plans: HashMap<u64, PlanState>,
 }
@@ -455,6 +457,7 @@ impl NativeExecutor {
                 is_flotilla_worker: true,
                 shuffle_server: Some(shuffle_server),
                 shuffle_server_connection,
+                #[cfg(feature = "celeborn")]
                 celeborn_client: None,
                 plans: HashMap::new(),
             }
@@ -464,6 +467,7 @@ impl NativeExecutor {
                 is_flotilla_worker: false,
                 shuffle_server: None,
                 shuffle_server_connection: None,
+                #[cfg(feature = "celeborn")]
                 celeborn_client: None,
                 plans: HashMap::new(),
             }
@@ -474,6 +478,7 @@ impl NativeExecutor {
     ///
     /// Must be called before any shuffle task that uses the Celeborn backend.
     /// The client is injected into every `BuilderContext` created by `run()`.
+    #[cfg(feature = "celeborn")]
     pub fn set_celeborn_client(
         &mut self,
         client: Arc<dyn daft_shuffles::client::celeborn::CelebornClient>,
@@ -541,6 +546,7 @@ impl NativeExecutor {
                     .as_ref()
                     .map(|server| (server.clone(), shuffle_address.unwrap())),
             );
+            #[cfg(feature = "celeborn")]
             if let Some(celeborn_client) = &self.celeborn_client {
                 ctx.set_celeborn_client(celeborn_client.clone());
             }

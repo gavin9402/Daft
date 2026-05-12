@@ -101,6 +101,7 @@ impl PipelineNodeImpl for GatherNode {
         let backend_name = match self.shuffle_backend.backend() {
             DistributedShuffleBackend::Ray => "RayGather",
             DistributedShuffleBackend::Flight(_) => "FlightGather",
+            #[cfg(feature = "celeborn")]
             DistributedShuffleBackend::Celeborn(_) => "CelebornGather",
         };
         vec![backend_name.to_string()]

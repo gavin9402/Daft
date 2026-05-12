@@ -84,17 +84,36 @@ impl RepartitionNode {
             task_id_counter,
         );
 
-        let transposed_outputs =
-            transpose_materialized_outputs_from_stream(outputs, self.num_partitions).await?;
+        match self.shuffle_backend.backend() {
+            #[cfg(feature = "celeborn")]
+            DistributedShuffleBackend::Celeborn(_) => {
+                // Celeborn mappers push data directly to the remote service
+                // during sink(); the coordinator only needs to wait for all
+                // map tasks to finish before emitting reduce tasks. The
+                // materialized outputs carry no partition refs (data lives on
+                // Celeborn), so we drain the stream without transposing.
+                use futures::TryStreamExt;
+                let _: Vec<_> = outputs.try_collect().await?;
 
-        self.shuffle_backend
-            .emit_read_tasks(
-                transposed_outputs,
-                self.as_ref(),
-                result_tx,
-                self.num_partitions,
-            )
-            .await
+                self.shuffle_backend
+                    .emit_read_tasks(vec![], self.as_ref(), result_tx, self.num_partitions)
+                    .await
+            }
+            _ => {
+                let transposed_outputs =
+                    transpose_materialized_outputs_from_stream(outputs, self.num_partitions)
+                        .await?;
+
+                self.shuffle_backend
+                    .emit_read_tasks(
+                        transposed_outputs,
+                        self.as_ref(),
+                        result_tx,
+                        self.num_partitions,
+                    )
+                    .await
+            }
+        }
     }
 }
 
@@ -161,6 +180,7 @@ impl PipelineNodeImpl for RepartitionNode {
         let backend_name = match self.shuffle_backend.backend() {
             DistributedShuffleBackend::Ray => "RayShuffle",
             DistributedShuffleBackend::Flight(_) => "FlightShuffle",
+            #[cfg(feature = "celeborn")]
             DistributedShuffleBackend::Celeborn(_) => "CelebornShuffle",
         };
         let mut res = vec![format!(

@@ -538,6 +538,26 @@ impl PyDaftExecutionConfig {
     fn enable_multi_glob_path_tasks(&self) -> PyResult<bool> {
         Ok(self.config.enable_multi_glob_path_tasks)
     }
+
+    #[getter]
+    fn celeborn_lm_host(&self) -> PyResult<Option<String>> {
+        Ok(self.config.celeborn.as_ref().map(|c| c.lm_host.clone()))
+    }
+
+    #[getter]
+    fn celeborn_lm_port(&self) -> PyResult<Option<i32>> {
+        Ok(self.config.celeborn.as_ref().map(|c| c.lm_port))
+    }
+
+    #[getter]
+    fn celeborn_app_id(&self) -> PyResult<Option<String>> {
+        Ok(self.config.celeborn.as_ref().map(|c| c.app_id.clone()))
+    }
+
+    #[getter]
+    fn celeborn_compression(&self) -> PyResult<Option<String>> {
+        Ok(self.config.celeborn.as_ref().map(|c| c.compression.clone()))
+    }
 }
 
 impl_bincode_py_state_serialization!(PyDaftExecutionConfig);
