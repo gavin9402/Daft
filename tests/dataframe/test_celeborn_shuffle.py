@@ -249,7 +249,7 @@ def test_celeborn_shuffle_repartition_small(celeborn_shuffle_ctx, input_partitio
         assert len(df) == input_partitions * output_partitions
 
 
-# @pytest.mark.skip(reason=_E2E_SKIP_REASON)
+@pytest.mark.skip(reason=_E2E_SKIP_REASON)
 @pytest.mark.skipif(
     get_tests_daft_runner_name() != "ray",
     reason="shuffle tests are meant for the ray runner",
