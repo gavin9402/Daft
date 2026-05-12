@@ -83,13 +83,13 @@ def celeborn_shuffle_ctx():
     """
 
     @contextmanager
-    def _ctx(lm_host: str = "localhost", lm_port: int = 9097):
+    def _ctx(lm_host: str = "localhost", lm_port: int = 9097, app_id: str = "test-app"):
         with tempfile.TemporaryDirectory() as _tmp_dir:
             with daft.execution_config_ctx(
                 shuffle_algorithm="celeborn",
                 celeborn_lm_host=lm_host,
                 celeborn_lm_port=lm_port,
-                celeborn_app_id="test-app",
+                celeborn_app_id=app_id,
                 celeborn_compression="lz4",
                 celeborn_push_data_timeout_ms=30_000,
                 celeborn_fetch_data_timeout_ms=30_000,
@@ -249,7 +249,7 @@ def test_celeborn_shuffle_repartition_small(celeborn_shuffle_ctx, input_partitio
         assert len(df) == input_partitions * output_partitions
 
 
-@pytest.mark.skip(reason=_E2E_SKIP_REASON)
+# @pytest.mark.skip(reason=_E2E_SKIP_REASON)
 @pytest.mark.skipif(
     get_tests_daft_runner_name() != "ray",
     reason="shuffle tests are meant for the ray runner",
@@ -260,14 +260,15 @@ def test_celeborn_shuffle_groupby_aggregate(celeborn_shuffle_ctx):
     This catches regressions where the read source emits empty/oversized
     partitions that the aggregator cannot consume.
     """
-    with celeborn_shuffle_ctx():
+    with celeborn_shuffle_ctx(lm_host="30.150.24.146", lm_port=37319, app_id="my-rust-app-001"):
         df = daft.from_pydict(
             {
                 "key": ["a", "b", "a", "b", "c", "a"],
                 "value": [1, 2, 3, 4, 5, 6],
             }
         )
-        result = df.groupby("key").agg(daft.col("value").sum()).collect()
+        # Explicit repartition to force the shuffle path through Celeborn.
+        result = df.repartition(3, "key").groupby("key").agg(daft.col("value").sum()).collect()
         # 3 distinct keys; sums: a=10, b=6, c=5.
         as_dict = {row["key"]: row["value"] for row in result.iter_rows()}
         assert as_dict == {"a": 10, "b": 6, "c": 5}
