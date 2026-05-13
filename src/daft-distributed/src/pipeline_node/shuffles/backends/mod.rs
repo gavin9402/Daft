@@ -21,9 +21,9 @@ mod flight;
 mod ray;
 
 #[cfg(feature = "celeborn")]
-pub(crate) use celeborn::CelebornShuffleBackendConfig;
-#[cfg(feature = "celeborn")]
 use celeborn::CelebornShuffleReadSpec;
+#[cfg(feature = "celeborn")]
+pub(crate) use celeborn::CelebornShuffleSpec;
 pub(crate) use flight::FlightShuffleBackendConfig;
 
 fn make_shuffle_id(context: &PipelineNodeContext) -> u64 {
@@ -35,7 +35,7 @@ pub(crate) enum DistributedShuffleBackend {
     Ray,
     Flight(FlightShuffleBackendConfig),
     #[cfg(feature = "celeborn")]
-    Celeborn(CelebornShuffleBackendConfig),
+    Celeborn(CelebornShuffleSpec),
 }
 
 #[derive(Clone)]
@@ -65,12 +65,9 @@ impl ShuffleBackend {
                 }
                 #[cfg(feature = "celeborn")]
                 DistributedShuffleBackend::Celeborn(backend) => {
-                    DistributedShuffleBackend::Celeborn(CelebornShuffleBackendConfig {
+                    DistributedShuffleBackend::Celeborn(CelebornShuffleSpec {
                         shuffle_id: make_shuffle_id(context),
-                        lm_host: backend.lm_host,
-                        lm_port: backend.lm_port,
-                        app_id: backend.app_id,
-                        compression: backend.compression,
+                        num_mappers: backend.num_mappers,
                     })
                 }
             },
@@ -116,13 +113,7 @@ impl ShuffleBackend {
             #[cfg(feature = "celeborn")]
             DistributedShuffleBackend::Celeborn(cfg) => LocalShuffleBackend::Celeborn {
                 shuffle_id: cfg.shuffle_id,
-                // In distributed mode, num_mappers is not yet known at plan
-                // generation time — it depends on how many map tasks the
-                // scheduler produces. The coordinator must set this field
-                // before serializing the plan to each worker.
-                // For now we pass 0 as a sentinel; the scheduler fills in
-                // the real value when it builds the per-worker plan.
-                num_mappers: 0,
+                num_mappers: cfg.num_mappers,
             },
         }
     }

@@ -2303,21 +2303,6 @@ pub enum ShuffleBackend {
     },
 }
 
-impl ShuffleBackend {
-    /// Return a copy with `num_mappers` set for the Celeborn variant.
-    /// Other variants are returned unchanged.
-    #[cfg(feature = "celeborn")]
-    pub fn with_num_mappers(self, num_mappers: u32) -> Self {
-        match self {
-            Self::Celeborn { shuffle_id, .. } => Self::Celeborn {
-                shuffle_id,
-                num_mappers,
-            },
-            other => other,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ShuffleReadBackend {
     Ray,

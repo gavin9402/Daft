@@ -12,19 +12,18 @@ use crate::{
     utils::channel::Sender,
 };
 
-/// Runtime configuration for the Celeborn shuffle backend.
+/// Coordinator-side metadata for a single Celeborn shuffle stage.
 ///
-/// One instance lives on the coordinator side per `RepartitionNode`. It is
-/// cloned into both the write-stage `RepartitionWriteBackend::Celeborn` (which
-/// is serialized to each map task) and the read-stage `ShuffleReadBackend::Celeborn`
-/// (which is serialized to each reduce task).
+/// One instance lives on the coordinator per `RepartitionNode`.
 #[derive(Clone)]
-pub(crate) struct CelebornShuffleBackendConfig {
+pub(crate) struct CelebornShuffleSpec {
+    /// Unique identifier for this shuffle stage, derived from
+    /// `(query_idx, node_id)` via `make_shuffle_id`.
     pub(crate) shuffle_id: u64,
-    pub(crate) lm_host: String,
-    pub(crate) lm_port: i32,
-    pub(crate) app_id: String,
-    pub(crate) compression: String,
+    /// Total number of map tasks for this shuffle, determined at plan
+    /// construction time from the upstream partition count (analogous to
+    /// Spark's `dependency.rdd.getNumPartitions`).
+    pub(crate) num_mappers: u32,
 }
 
 /// Read-stage spec carrying the metadata needed to construct reduce tasks.
@@ -52,7 +51,7 @@ pub(crate) struct CelebornShuffleReadSpec {
 /// `ShuffleBackend::register_cleanup` dispatch table has a uniform shape across
 /// all backend variants.
 pub(crate) fn register_cleanup(
-    _backend: &CelebornShuffleBackendConfig,
+    _backend: &CelebornShuffleSpec,
     _plan_context: &mut PlanExecutionContext,
 ) {
 }
@@ -62,9 +61,7 @@ pub(crate) fn register_cleanup(
 /// Unlike Flight which needs to aggregate per-mapper output locations, Celeborn
 /// hides the location index inside its own cluster—so the spec is just the
 /// shuffle id.
-pub(crate) fn read_spec_from_backend(
-    backend: &CelebornShuffleBackendConfig,
-) -> CelebornShuffleReadSpec {
+pub(crate) fn read_spec_from_backend(backend: &CelebornShuffleSpec) -> CelebornShuffleReadSpec {
     CelebornShuffleReadSpec {
         shuffle_id: backend.shuffle_id,
     }
@@ -79,7 +76,7 @@ pub(crate) async fn emit_read_tasks(
     node_id: NodeID,
     schema: SchemaRef,
     num_partitions: usize,
-    _backend: &CelebornShuffleBackendConfig,
+    _backend: &CelebornShuffleSpec,
     read_spec: CelebornShuffleReadSpec,
     node: &dyn PipelineNodeImpl,
     result_tx: Sender<SwordfishTaskBuilder>,
@@ -108,13 +105,10 @@ pub(crate) async fn emit_read_tasks(
 mod tests {
     use super::*;
 
-    fn sample_backend() -> CelebornShuffleBackendConfig {
-        CelebornShuffleBackendConfig {
+    fn sample_spec() -> CelebornShuffleSpec {
+        CelebornShuffleSpec {
             shuffle_id: 42,
-            lm_host: "host1".to_string(),
-            lm_port: 9097,
-            app_id: "app-123".to_string(),
-            compression: "lz4".to_string(),
+            num_mappers: 8,
         }
     }
 
@@ -124,22 +118,20 @@ mod tests {
     /// accidentally drop or rename these fields are caught.
     #[test]
     fn read_spec_from_backend_forwards_shuffle_id() {
-        let backend = sample_backend();
-        let spec = read_spec_from_backend(&backend);
-        assert_eq!(spec.shuffle_id, 42);
+        let spec_input = sample_spec();
+        let read_spec = read_spec_from_backend(&spec_input);
+        assert_eq!(read_spec.shuffle_id, 42);
     }
 
     /// `read_spec_from_backend` must be cheap (no allocations beyond the
-    /// returned struct) and must not mutate the source backend. We verify the
-    /// "no mutation" half by re-reading the backend after the call.
+    /// returned struct) and must not mutate the source. We verify the
+    /// "no mutation" half by re-reading after the call.
     #[test]
     fn read_spec_from_backend_does_not_mutate_input() {
-        let backend = sample_backend();
-        let _ = read_spec_from_backend(&backend);
-        assert_eq!(backend.shuffle_id, 42);
-        assert_eq!(backend.lm_host, "host1");
-        assert_eq!(backend.lm_port, 9097);
-        assert_eq!(backend.app_id, "app-123");
+        let spec_input = sample_spec();
+        let _ = read_spec_from_backend(&spec_input);
+        assert_eq!(spec_input.shuffle_id, 42);
+        assert_eq!(spec_input.num_mappers, 8);
     }
 
     /// `CelebornShuffleReadInput` is what `emit_read_tasks` attaches to each

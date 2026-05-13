@@ -37,7 +37,7 @@ fn celeborn_test_config() -> CelebornClientConfig {
     let lm_port: i32 = std::env::var("CELEBORN_LM_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(32393);
+        .unwrap_or(37319);
     let app_id = std::env::var("CELEBORN_APP_ID").unwrap_or_else(|_| "my-rust-app-001".to_string());
 
     CelebornClientConfig {

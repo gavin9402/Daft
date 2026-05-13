@@ -386,19 +386,6 @@ impl SwordfishTaskBuilder {
         self
     }
 
-    /// Transform the current plan without associating a pipeline node.
-    ///
-    /// Unlike [`map_plan`], this does not append to `pending_node_ids` or
-    /// modify the plan fingerprint. Use it when patching metadata (e.g.
-    /// injecting `num_mappers`) after the plan structure is finalized.
-    pub fn map_plan_without_node<F>(mut self, f: F) -> Self
-    where
-        F: FnOnce(LocalPhysicalPlanRef) -> LocalPhysicalPlanRef,
-    {
-        self.plan = f(self.plan);
-        self
-    }
-
     /// Create a new builder by combining two existing builders.
     /// The function receives both plans and returns a new plan.
     /// This allows combining plans from two builders without exposing internals.
