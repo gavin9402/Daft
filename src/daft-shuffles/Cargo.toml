@@ -5,7 +5,7 @@ arrow-ipc = {workspace = true}
 async-channel = "2.5.0"
 async-trait = {workspace = true}
 bytes = {workspace = true}
-celeborn-client = {git = "https://github.com/gavin9402/celeborn.git", branch = "standalone_and_rust", optional = true}
+celeborn-client = {git = "ssh://git@gitlab.alibaba-inc.com/dtlake_group/celeborn.git", branch = "standalone_and_rust", optional = true}
 common-error = {path = "../common/error", default-features = false}
 common-runtime = {path = "../common/runtime", default-features = false}
 daft-core = {path = "../daft-core", default-features = false}
