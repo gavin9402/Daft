@@ -37,7 +37,7 @@ fn celeborn_test_config() -> CelebornClientConfig {
     let lm_port: i32 = std::env::var("CELEBORN_LM_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(37319);
+        .unwrap_or(35435);
     let app_id = std::env::var("CELEBORN_APP_ID").unwrap_or_else(|_| "my-rust-app-001".to_string());
 
     CelebornClientConfig {
@@ -63,85 +63,6 @@ async fn connect_to_real_celeborn() {
 
     println!("connected successfully, client created.");
     drop(client);
-}
-
-/// End-to-end: push raw bytes → mapper_end → read_partition → assert equal.
-#[tokio::test]
-#[ignore = "requires a running Celeborn cluster"]
-async fn push_read_raw_bytes_roundtrip() {
-    let config = celeborn_test_config();
-
-    let num_mappers = 2;
-    let num_partitions = 3;
-    let shuffle_id: u64 = 1001;
-
-    let client = ShuffleCelebornClient::connect(&config).expect("failed to connect");
-
-    client
-        .register_shuffle(shuffle_id, num_mappers, num_partitions)
-        .await
-        .expect("register_shuffle failed");
-
-    // Mapper 0 pushes to partition 0.
-    let payload_m0 = b"hello from mapper 0";
-    client
-        .push_data(shuffle_id, 0, 0, 0, payload_m0)
-        .await
-        .expect("push_data mapper 0 failed");
-    println!("mapper 0: pushed {} bytes to partition 0", payload_m0.len());
-
-    // Mapper 1 pushes to partition 0 (same partition, different mapper).
-    let payload_m1 = b"hello from mapper 1";
-    client
-        .push_data(shuffle_id, 1, 0, 0, payload_m1)
-        .await
-        .expect("push_data mapper 1 failed");
-    println!("mapper 1: pushed {} bytes to partition 0", payload_m1.len());
-
-    // Both mappers signal end.
-    client
-        .mapper_end(shuffle_id, 0, 0)
-        .await
-        .expect("mapper_end(0) failed");
-    client
-        .mapper_end(shuffle_id, 1, 0)
-        .await
-        .expect("mapper_end(1) failed");
-    println!("both mappers ended");
-
-    // Read partition 0 — should contain data from both mappers.
-    let mut stream = client
-        .read_partition(shuffle_id, 0)
-        .await
-        .expect("read_partition failed");
-
-    let mut all_bytes = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.expect("stream chunk error");
-        all_bytes.extend_from_slice(&chunk);
-    }
-
-    println!("read {} total bytes from partition 0", all_bytes.len());
-
-    // The combined data must contain both payloads.
-    assert!(
-        all_bytes.len() >= payload_m0.len() + payload_m1.len(),
-        "expected at least {} bytes, got {}",
-        payload_m0.len() + payload_m1.len(),
-        all_bytes.len()
-    );
-
-    // Verify both payloads are present (order may vary by Celeborn internals).
-    let combined = String::from_utf8_lossy(&all_bytes);
-    assert!(
-        combined.contains("hello from mapper 0"),
-        "missing mapper 0 data in: {combined}"
-    );
-    assert!(
-        combined.contains("hello from mapper 1"),
-        "missing mapper 1 data in: {combined}"
-    );
-    println!("raw bytes roundtrip PASSED");
 }
 
 /// End-to-end Arrow IPC roundtrip through real Celeborn:
@@ -230,45 +151,46 @@ async fn arrow_ipc_roundtrip_real_celeborn() {
         .await
         .expect("read_partition failed");
 
-    let mut all_bytes = Vec::new();
+    // With the streaming reader, each mapper's IPC data arrives as a
+    // separate chunk that can be decoded independently.
+    let mut chunks = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.expect("stream chunk error");
-        all_bytes.extend_from_slice(&chunk);
+        chunks.push(chunk);
     }
     println!(
-        "read {} total bytes from partition {target_partition}",
-        all_bytes.len()
+        "read {} chunks from partition {target_partition} ({} total bytes)",
+        chunks.len(),
+        chunks.iter().map(|c| c.len()).sum::<usize>(),
     );
-
-    // Celeborn concatenates push_data payloads, so the read result is
-    // `ipc_m0 ++ ipc_m1` (or the reverse). We know the exact boundary
-    // sizes, so we can split and deserialize each independently.
     assert_eq!(
-        all_bytes.len(),
-        ipc_m0.len() + ipc_m1.len(),
-        "total bytes mismatch: expected {} + {} = {}, got {}",
-        ipc_m0.len(),
-        ipc_m1.len(),
-        ipc_m0.len() + ipc_m1.len(),
-        all_bytes.len()
+        chunks.len(),
+        2,
+        "expected 2 IPC stream chunks (one per mapper), got {}",
+        chunks.len()
     );
 
-    // Split at the known boundary (mapper 0's IPC is first since map_id=0).
-    let (part0, part1) = all_bytes.split_at(ipc_m0.len());
-    let rt_m0 = MicroPartition::read_from_ipc_stream(part0).expect("deserialize m0 failed");
-    let rt_m1 = MicroPartition::read_from_ipc_stream(part1).expect("deserialize m1 failed");
+    // Decode each chunk independently and verify total data.
+    let mut total_rows = 0;
+    let mut all_batches = Vec::new();
+    for (i, chunk) in chunks.iter().enumerate() {
+        let mp = MicroPartition::read_from_ipc_stream(chunk)
+            .unwrap_or_else(|e| panic!("failed to deserialize chunk {i}: {e}"));
+        println!("chunk {i}: {} rows, {} bytes", mp.len(), chunk.len());
+        total_rows += mp.len();
+        all_batches.extend(mp.record_batches().iter().cloned());
+    }
 
-    // Verify mapper 0's data.
-    assert_eq!(rt_m0.len(), 3, "mapper 0 should have 3 rows");
-    assert_eq!(rt_m0.schema(), mp_m0.schema());
-    assert_eq!(rt_m0.record_batches()[0], batch_m0);
-    println!("mapper 0 data verified: 3 rows OK");
+    assert_eq!(
+        total_rows, 5,
+        "expected 5 total rows (3 + 2), got {total_rows}"
+    );
 
-    // Verify mapper 1's data.
-    assert_eq!(rt_m1.len(), 2, "mapper 1 should have 2 rows");
-    assert_eq!(rt_m1.schema(), mp_m1.schema());
-    assert_eq!(rt_m1.record_batches()[0], batch_m1);
-    println!("mapper 1 data verified: 2 rows OK");
+    // Verify that both mappers' data is present (order may vary).
+    let has_m0 = all_batches.contains(&batch_m0);
+    let has_m1 = all_batches.contains(&batch_m1);
+    assert!(has_m0, "mapper 0 data not found in decoded chunks");
+    assert!(has_m1, "mapper 1 data not found in decoded chunks");
 
     println!("Arrow IPC roundtrip through real Celeborn PASSED");
 }

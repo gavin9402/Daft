@@ -1,8 +1,5 @@
 [env]
 PYO3_PYTHON = "./.venv/bin/python"
 
-[target.aarch64-apple-darwin]
-rustflags = ["-C", "link-arg=-Wl,-rpath,/opt/homebrew/lib"]
-
-[target.x86_64-apple-darwin]
-rustflags = ["-C", "link-arg=-Wl,-rpath,/opt/homebrew/lib"]
+[net]
+git-fetch-with-cli = true

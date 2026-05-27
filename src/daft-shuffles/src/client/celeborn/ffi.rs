@@ -7,6 +7,7 @@
 
 use std::{
     collections::HashMap,
+    io::{self, BufReader, Read},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -14,9 +15,24 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use celeborn_client::{Config as CelebornConfig, ShuffleClient};
 use common_error::{DaftError, DaftResult};
-use futures::stream;
 
 use super::client::{CelebornClient, CelebornClientConfig, PartitionDataStream};
+
+/// A reader wrapper that records all bytes passing through `read()` into an
+/// internal buffer, allowing Arrow's `StreamReader` to drive IPC parsing
+/// while we capture the raw bytes of each self-contained IPC stream.
+struct TeeReader<R> {
+    inner: R,
+    buffer: Vec<u8>,
+}
+
+impl<R: Read> Read for TeeReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.buffer.extend_from_slice(&buf[..n]);
+        Ok(n)
+    }
+}
 
 /// Convert a value to `i32`, returning a descriptive error on overflow.
 ///
@@ -235,41 +251,68 @@ impl CelebornClient for ShuffleCelebornClient {
         let partition_id = to_ffi_i32(partition_id, "partition_id")?;
         let num_mappers = to_ffi_i32(num_mappers_raw, "num_mappers")?;
 
-        let data = run_blocking("read_partition", move || {
-            let mut guard = lock_client(&inner)?;
-            // Must update reducer file group metadata before reading.
-            guard
-                .0
-                .update_reducer_file_group(shuffle_id_ffi)
-                .map_err(|e| {
-                    DaftError::External(
-                        format!("Celeborn update_reducer_file_group failed: {e}").into(),
-                    )
-                })?;
-            guard
-                .0
-                .read_partition_all(shuffle_id_ffi, partition_id, num_mappers)
-                .map_err(|e| {
-                    DaftError::External(format!("Celeborn read_partition failed: {e}").into())
-                })
-        })
-        .await?;
+        let (tx, rx) = async_channel::bounded(4);
 
-        // The C++ SDK only exposes `read_partition_all` which returns all
-        // data for a partition as a single contiguous `Vec<u8>`. The returned
-        // buffer is a concatenation of self-contained Arrow IPC streams, one
-        // per mapper push. We cannot split it by fixed byte size because that
-        // would break IPC stream boundaries and cause deserialization failures
-        // on the reduce side (`forward_celeborn_partition_stream` calls
-        // `read_from_ipc_stream` on each chunk independently).
-        //
-        // A proper streaming solution requires either:
-        //   (a) a new C++ FFI API that yields one IPC stream per mapper, or
-        //   (b) an IPC-aware splitter that parses stream boundaries.
-        //
-        // For now we wrap the full buffer as a single-element stream.
-        let bytes = Bytes::from(data);
-        Ok(Box::pin(stream::once(async move { Ok(bytes) })))
+        tokio::task::spawn_blocking(move || {
+            let run = || -> DaftResult<()> {
+                let mut guard = lock_client(&inner)?;
+                guard
+                    .0
+                    .update_reducer_file_group(shuffle_id_ffi)
+                    .map_err(|e| {
+                        DaftError::External(
+                            format!("Celeborn update_reducer_file_group failed: {e}").into(),
+                        )
+                    })?;
+
+                let reader = guard
+                    .0
+                    .open_partition(shuffle_id_ffi, partition_id, 0, 0, num_mappers)
+                    .map_err(|e| {
+                        DaftError::External(format!("Celeborn open_partition failed: {e}").into())
+                    })?;
+
+                let mut tee = TeeReader {
+                    inner: BufReader::with_capacity(64 * 1024, reader),
+                    buffer: Vec::new(),
+                };
+
+                loop {
+                    tee.buffer.clear();
+                    match arrow_ipc::reader::StreamReader::try_new(&mut tee, None) {
+                        Ok(stream_reader) => {
+                            for batch in stream_reader {
+                                batch.map_err(|e| {
+                                    DaftError::External(
+                                        format!("Celeborn IPC stream decode error: {e}").into(),
+                                    )
+                                })?;
+                            }
+                            let ipc_bytes = Bytes::from(std::mem::take(&mut tee.buffer));
+                            if !ipc_bytes.is_empty() && tx.send_blocking(Ok(ipc_bytes)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            if !tee.buffer.is_empty() {
+                                let _ = tx.send_blocking(Err(DaftError::External(
+                                    "Celeborn: corrupt Arrow IPC stream header in partition data"
+                                        .into(),
+                                )));
+                            }
+                            break;
+                        }
+                    }
+                }
+                Ok(())
+            };
+
+            if let Err(e) = run() {
+                let _ = tx.send_blocking(Err(e));
+            }
+        });
+
+        Ok(Box::pin(rx))
     }
 
     /// Clean up local per-shuffle metadata.
