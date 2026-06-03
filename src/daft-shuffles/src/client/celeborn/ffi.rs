@@ -8,7 +8,7 @@
 use std::{
     collections::HashMap,
     io::{self, BufReader, Read},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
 };
 
 use async_trait::async_trait;
@@ -45,15 +45,6 @@ fn to_ffi_i32(value: impl TryInto<i32> + std::fmt::Display + Copy, name: &str) -
     })
 }
 
-/// Acquire the FFI client lock, returning a descriptive error if poisoned.
-fn lock_client(
-    inner: &Mutex<CelebornShuffleClient>,
-) -> DaftResult<MutexGuard<'_, CelebornShuffleClient>> {
-    inner
-        .lock()
-        .map_err(|e| DaftError::External(format!("Celeborn client lock poisoned: {e}").into()))
-}
-
 /// Run a synchronous FFI closure on the tokio blocking thread pool and
 /// map JoinError (panic) into a [`DaftError`].
 async fn run_blocking<F, R>(op_name: &str, f: F) -> DaftResult<R>
@@ -69,42 +60,48 @@ where
 
 /// Thread-safe wrapper around `celeborn_client::ShuffleClient`.
 ///
-/// `ShuffleClient` contains a CXX `UniquePtr<ShuffleClientHandle>` whose raw
-/// pointer (`*const cxx::void`) prevents auto `Send`/`Sync`. All access is
-/// serialised through a `Mutex`, so concurrent use from multiple threads is safe.
+/// `ShuffleClient` holds an opaque raw pointer to the C++ FFI handle, which
+/// prevents auto `Send`/`Sync`. As of the celeborn-client "parallel read/write"
+/// revision, every `ShuffleClient` method takes `&self` and the underlying C++
+/// `ShuffleClientImpl` synchronises all shared state internally (folly
+/// concurrent maps, per-shuffle registration mutex, per-call compressor).
+/// Concurrent `push_data` / `read_partition` from multiple threads is therefore
+/// safe, so this wrapper is both `Send` and `Sync` and can be shared via a
+/// plain `Arc` without any external lock.
 struct CelebornShuffleClient(ShuffleClient);
 
-// SAFETY: `ShuffleClient` is !Send only because it contains a CXX
-// `UniquePtr` with a raw pointer. The raw pointer is exclusively owned
-// by this newtype and never shared. All access to the inner
-// `ShuffleClient` is mediated through `Arc<Mutex<CelebornShuffleClient>>`
-// in `ShuffleCelebornClient`, which guarantees:
-//   1. Only one thread holds the lock at any time (mutual exclusion).
-//   2. The `Mutex` provides a happens-before relationship between
-//      lock/unlock pairs (memory ordering).
-// Therefore it is safe to move the wrapper between threads.
+// SAFETY: `ShuffleClient` is `!Send`/`!Sync` at the type level only because it
+// holds an opaque raw pointer to the C++ FFI handle. That handle owns its own
+// thread pool and synchronises every shared structure internally, and all
+// methods take `&self`, so it is safe to both move the wrapper between threads
+// (`Send`) and share `&CelebornShuffleClient` across threads (`Sync`). This
+// mirrors the `unsafe impl Send + Sync for ShuffleClient` in celeborn-client
+// itself.
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl Send for CelebornShuffleClient {}
+// SAFETY: see the `Send` impl above; the inner C++ client synchronises all
+// shared state internally and exposes every operation through `&self`.
+unsafe impl Sync for CelebornShuffleClient {}
 
 /// Celeborn shuffle client backed by the C++ FFI implementation.
 ///
-/// Thread-safety: `ShuffleClient` requires `&mut self` for all operations, so
-/// we wrap it in an `Arc<Mutex<_>>`. The `Mutex` is held only for the duration
-/// of each synchronous FFI call inside `spawn_blocking`, keeping contention
-/// minimal.
+/// Thread-safety: as of the celeborn-client "parallel read/write" revision the
+/// underlying `ShuffleClient` exposes every operation through `&self` and
+/// synchronises internally, so we share it via a plain `Arc` with **no external
+/// lock**. This lets multiple partitions be pushed and read truly concurrently.
 ///
 /// This is a **connection-level** object: one instance per Worker, shared
 /// across all shuffles. Per-shuffle metadata (`num_mappers`, `num_partitions`)
-/// is stored internally in `shuffle_meta`.
+/// is stored in `shuffle_meta`, which is still guarded by a `Mutex` because it
+/// is plain Rust state mutated by `register_shuffle` / `unregister_shuffle`.
 pub struct ShuffleCelebornClient {
-    inner: Arc<Mutex<CelebornShuffleClient>>,
+    inner: Arc<CelebornShuffleClient>,
     shuffle_meta: Arc<Mutex<HashMap<u64, (u32, u32)>>>,
 }
 
-// SAFETY: The sole field is `Arc<Mutex<CelebornShuffleClient>>`.
-//   - `Arc` is `Send + Sync` when the inner type is `Send`, which we
-//     guarantee via the manual `Send` impl on `CelebornShuffleClient` + the
-//     `Mutex` serialisation.
+// SAFETY: both fields are `Arc<T>` where `T: Send + Sync`
+// (`CelebornShuffleClient` via its manual impls above, `Mutex<HashMap<..>>`
+// inherently), so the struct is safe to send and share across threads.
 unsafe impl Send for ShuffleCelebornClient {}
 unsafe impl Sync for ShuffleCelebornClient {}
 
@@ -134,7 +131,7 @@ impl ShuffleCelebornClient {
             })?;
 
         Ok(Self {
-            inner: Arc::new(Mutex::new(CelebornShuffleClient(client))),
+            inner: Arc::new(CelebornShuffleClient(client)),
             shuffle_meta: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -185,8 +182,7 @@ impl CelebornClient for ShuffleCelebornClient {
         let data_owned = data.to_vec();
 
         run_blocking("push_data", move || {
-            let mut guard = lock_client(&inner)?;
-            guard
+            inner
                 .0
                 .push_data(
                     shuffle_id,
@@ -221,8 +217,7 @@ impl CelebornClient for ShuffleCelebornClient {
         let num_mappers = to_ffi_i32(num_mappers_raw, "num_mappers")?;
 
         run_blocking("mapper_end", move || {
-            let mut guard = lock_client(&inner)?;
-            guard
+            inner
                 .0
                 .mapper_end(shuffle_id, map_id, attempt_id, num_mappers)
                 .map_err(|e| DaftError::External(format!("Celeborn mapper_end failed: {e}").into()))
@@ -255,8 +250,11 @@ impl CelebornClient for ShuffleCelebornClient {
 
         tokio::task::spawn_blocking(move || {
             let run = || -> DaftResult<()> {
-                let mut guard = lock_client(&inner)?;
-                guard
+                // No external lock: the celeborn-client `ShuffleClient` takes
+                // `&self` and synchronises internally, so multiple partitions
+                // can be opened and read concurrently from different blocking
+                // threads sharing the same `Arc<CelebornShuffleClient>`.
+                inner
                     .0
                     .update_reducer_file_group(shuffle_id_ffi)
                     .map_err(|e| {
@@ -265,7 +263,7 @@ impl CelebornClient for ShuffleCelebornClient {
                         )
                     })?;
 
-                let reader = guard
+                let reader = inner
                     .0
                     .open_partition(shuffle_id_ffi, partition_id, 0, 0, num_mappers)
                     .map_err(|e| {
