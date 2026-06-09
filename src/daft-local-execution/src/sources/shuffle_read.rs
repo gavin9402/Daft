@@ -260,6 +260,7 @@ async fn forward_partition_stream(
 pub struct CelebornShuffleReadSource {
     receiver: UnboundedReceiver<(InputId, Vec<CelebornShuffleReadInput>)>,
     shuffle_id: u64,
+    num_mappers: u32,
     client: Arc<dyn CelebornClient>,
     schema: SchemaRef,
     num_parallel_tasks: usize,
@@ -270,6 +271,7 @@ impl CelebornShuffleReadSource {
     pub fn try_new(
         receiver: UnboundedReceiver<(InputId, Vec<CelebornShuffleReadInput>)>,
         shuffle_id: u64,
+        num_mappers: u32,
         client: Arc<dyn CelebornClient>,
         schema: SchemaRef,
         cfg: &DaftExecutionConfig,
@@ -284,6 +286,7 @@ impl CelebornShuffleReadSource {
         Ok(Self {
             receiver,
             shuffle_id,
+            num_mappers,
             client,
             schema,
             num_parallel_tasks,
@@ -297,18 +300,13 @@ impl CelebornShuffleReadSource {
         let mut receiver = self.receiver;
         let num_parallel_tasks = self.num_parallel_tasks;
         let shuffle_id = self.shuffle_id;
+        let num_mappers = self.num_mappers;
         let schema = self.schema.clone();
         let client = self.client.clone();
 
         let io_runtime = get_io_runtime(true);
         io_runtime.spawn(async move {
-            // Lazily register the shuffle so that `read_partition` can look up
-            // `num_mappers` from the client's local `shuffle_meta`. The write
-            // side may run on a different Worker with its own client instance,
-            // so we must register here as well. `num_mappers` = 1 and
-            // `num_partitions` = 0 are acceptable because `read_partition`
-            // only uses `num_mappers` from the metadata.
-            client.register_shuffle(shuffle_id, 1, 0).await?;
+            client.register_shuffle(shuffle_id, num_mappers, 0).await?;
 
             let mut task_set: JoinSet<DaftResult<InputId>> = JoinSet::new();
             let mut pending_tasks: VecDeque<(InputId, CelebornShuffleReadInput)> = VecDeque::new();

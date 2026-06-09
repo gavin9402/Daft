@@ -35,6 +35,7 @@ pub(crate) struct CelebornShuffleSpec {
 /// `emit_read_tasks`).
 pub(crate) struct CelebornShuffleReadSpec {
     pub(crate) shuffle_id: u64,
+    pub(crate) num_mappers: u32,
 }
 
 /// Cleanup hook for Celeborn shuffles.
@@ -64,6 +65,7 @@ pub(crate) fn register_cleanup(
 pub(crate) fn read_spec_from_backend(backend: &CelebornShuffleSpec) -> CelebornShuffleReadSpec {
     CelebornShuffleReadSpec {
         shuffle_id: backend.shuffle_id,
+        num_mappers: backend.num_mappers,
     }
 }
 
@@ -87,6 +89,7 @@ pub(crate) async fn emit_read_tasks(
             schema.clone(),
             ShuffleReadBackend::Celeborn {
                 shuffle_id: read_spec.shuffle_id,
+                num_mappers: read_spec.num_mappers,
             },
             StatsState::NotMaterialized,
             LocalNodeContext::new(Some(node_id as usize)),

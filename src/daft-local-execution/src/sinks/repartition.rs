@@ -505,26 +505,38 @@ impl BlockingSink for RepartitionSink {
                             //    finished pushing data. Celeborn requires exactly one
                             //    `mapper_end` per `(shuffle_id, map_id, attempt_id)`.
                             //
-                            //    We fail fast on the first error: if a mapper_end call
-                            //    fails, the Celeborn cluster will not have received all
-                            //    completion signals, making the shuffle incomplete.
-                            //    Continuing would lead to a reduce-side read of
-                            //    potentially inconsistent data.
+                            //    The BlockingSink framework creates `max_concurrency`
+                            //    states per input for parallel morsel processing, so
+                            //    `states` may contain multiple entries with the same
+                            //    `(shuffle_id, map_id, attempt_id)`. We must deduplicate
+                            //    to avoid calling mapper_end more than once per mapper,
+                            //    which would confuse the Celeborn cluster.
+                            let mut seen_mappers = std::collections::HashSet::new();
                             for state in &states {
-                                state
-                                    .client
-                                    .mapper_end(state.shuffle_id, state.map_id, state.attempt_id)
-                                    .await
-                                    .map_err(|e| {
-                                        tracing::error!(
-                                            shuffle_id = state.shuffle_id,
-                                            map_id = state.map_id,
-                                            attempt_id = state.attempt_id,
-                                            error = %e,
-                                            "Celeborn mapper_end failed; aborting finalize"
-                                        );
-                                        e
-                                    })?;
+                                if seen_mappers.insert((
+                                    state.shuffle_id,
+                                    state.map_id,
+                                    state.attempt_id,
+                                )) {
+                                    state
+                                        .client
+                                        .mapper_end(
+                                            state.shuffle_id,
+                                            state.map_id,
+                                            state.attempt_id,
+                                        )
+                                        .await
+                                        .map_err(|e| {
+                                            tracing::error!(
+                                                shuffle_id = state.shuffle_id,
+                                                map_id = state.map_id,
+                                                attempt_id = state.attempt_id,
+                                                error = %e,
+                                                "Celeborn mapper_end failed; aborting finalize"
+                                            );
+                                            e
+                                        })?;
+                                }
                             }
 
                             // 2. Aggregate per-partition row/byte counters across all

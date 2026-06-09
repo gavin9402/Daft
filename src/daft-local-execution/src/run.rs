@@ -208,6 +208,7 @@ impl PyNativeExecutor {
     ///
     /// Configuration is read from the `DaftExecutionConfig.celeborn` field.
     /// Must be called before any shuffle task that uses the Celeborn backend.
+    /// Idempotent: if a client is already connected, this is a no-op.
     ///
     /// # Arguments
     /// * `daft_execution_config` - A `PyDaftExecutionConfig` whose inner
@@ -219,6 +220,15 @@ impl PyNativeExecutor {
         py: Python<'_>,
         daft_execution_config: &PyDaftExecutionConfig,
     ) -> PyResult<()> {
+        if self
+            .executor
+            .lock_py_attached(py)
+            .unwrap()
+            .has_celeborn_client()
+        {
+            return Ok(());
+        }
+
         let exec_config = daft_execution_config.config.as_ref();
         let celeborn_cfg = exec_config.celeborn.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
@@ -481,12 +491,20 @@ impl NativeExecutor {
     ///
     /// Must be called before any shuffle task that uses the Celeborn backend.
     /// The client is injected into every `BuilderContext` created by `run()`.
+    /// Idempotent: once a client is set it is never replaced.
     #[cfg(feature = "celeborn")]
     pub fn set_celeborn_client(
         &mut self,
         client: Arc<dyn daft_shuffles::client::celeborn::CelebornClient>,
     ) {
-        self.celeborn_client = Some(client);
+        if self.celeborn_client.is_none() {
+            self.celeborn_client = Some(client);
+        }
+    }
+
+    #[cfg(feature = "celeborn")]
+    pub fn has_celeborn_client(&self) -> bool {
+        self.celeborn_client.is_some()
     }
 
     pub fn shuffle_address(&self) -> Option<String> {

@@ -260,7 +260,7 @@ def test_celeborn_shuffle_groupby_aggregate(celeborn_shuffle_ctx):
     This catches regressions where the read source emits empty/oversized
     partitions that the aggregator cannot consume.
     """
-    with celeborn_shuffle_ctx(lm_host="30.150.24.146", lm_port=35435, app_id="my-rust-app-001"):
+    with celeborn_shuffle_ctx(lm_host="30.150.24.146", lm_port=48790, app_id="my-rust-app-001"):
         df = daft.from_pydict(
             {
                 "key": ["a", "b", "a", "b", "c", "a"],

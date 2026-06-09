@@ -291,11 +291,19 @@ impl CelebornClient for ShuffleCelebornClient {
                                 break;
                             }
                         }
-                        Err(_) => {
+                        Err(e) => {
                             if !tee.buffer.is_empty() {
+                                let preview_len = tee.buffer.len().min(64);
                                 let _ = tx.send_blocking(Err(DaftError::External(
-                                    "Celeborn: corrupt Arrow IPC stream header in partition data"
-                                        .into(),
+                                    format!(
+                                        "Celeborn: corrupt Arrow IPC stream header in partition data \
+                                         (shuffle_id={shuffle_id_ffi}, partition_id={partition_id}, \
+                                         num_mappers={num_mappers}, buffer_len={}, first_{preview_len}_bytes={:?}, \
+                                         ipc_error={e})",
+                                        tee.buffer.len(),
+                                        &tee.buffer[..preview_len],
+                                    )
+                                    .into(),
                                 )));
                             }
                             break;

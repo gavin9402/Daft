@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use common_error::DaftResult;
 use common_partitioning::PartitionRef;
 use daft_local_plan::{
@@ -26,8 +28,26 @@ use celeborn::CelebornShuffleReadSpec;
 pub(crate) use celeborn::CelebornShuffleSpec;
 pub(crate) use flight::FlightShuffleBackendConfig;
 
+// Process-level seed derived from startup time. Mixed into every shuffle_id
+// so that restarts against the same Celeborn LifecycleManager (fixed app_id)
+// do not collide with stale data from a previous run.
+static SHUFFLE_SESSION_SEED: LazyLock<u16> = LazyLock::new(|| {
+    use std::time::SystemTime;
+    (SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        & 0x1FFF) as u16
+});
+
 fn make_shuffle_id(context: &PipelineNodeContext) -> u64 {
-    ((context.query_idx as u64) << 32) | (context.node_id as u64)
+    // Layout: [seed:13][query_idx:10][node_id:8] = 31 bits.
+    // Fits in i32 (required by the Celeborn C++ FFI) while providing
+    // cross-restart uniqueness via the session seed.
+    let seed = *SHUFFLE_SESSION_SEED as u64;
+    let query = (context.query_idx as u64) & 0x3FF;
+    let node = (context.node_id as u64) & 0xFF;
+    (seed << 18) | (query << 8) | node
 }
 
 #[derive(Clone)]

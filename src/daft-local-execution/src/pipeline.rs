@@ -1806,7 +1806,10 @@ fn physical_plan_to_pipeline(
                 SourceNode::new(Box::new(source), stats_state.clone(), ctx, context).boxed()
             }
             #[cfg(feature = "celeborn")]
-            ShuffleReadBackend::Celeborn { shuffle_id, .. } => {
+            ShuffleReadBackend::Celeborn {
+                shuffle_id,
+                num_mappers,
+            } => {
                 let client = ctx.celeborn_client().expect(
                     "Celeborn client must be set on BuilderContext before pipeline translation",
                 );
@@ -1816,6 +1819,7 @@ fn physical_plan_to_pipeline(
                 let source = crate::sources::shuffle_read::CelebornShuffleReadSource::try_new(
                     rx,
                     *shuffle_id,
+                    *num_mappers,
                     client,
                     schema.clone(),
                     cfg,

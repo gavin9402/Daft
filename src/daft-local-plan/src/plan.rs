@@ -2313,6 +2313,7 @@ pub enum ShuffleReadBackend {
     #[cfg(feature = "celeborn")]
     Celeborn {
         shuffle_id: u64,
+        num_mappers: u32,
     },
 }
 

@@ -37,7 +37,7 @@ fn celeborn_test_config() -> CelebornClientConfig {
     let lm_port: i32 = std::env::var("CELEBORN_LM_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(35435);
+        .unwrap_or(48790);
     let app_id = std::env::var("CELEBORN_APP_ID").unwrap_or_else(|_| "my-rust-app-001".to_string());
 
     CelebornClientConfig {
@@ -74,7 +74,10 @@ async fn arrow_ipc_roundtrip_real_celeborn() {
 
     let num_mappers = 2;
     let num_partitions = 4;
-    let shuffle_id: u64 = 2001;
+    let shuffle_id: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let target_partition: u32 = 2;
 
     let client = ShuffleCelebornClient::connect(&config).expect("failed to connect");
